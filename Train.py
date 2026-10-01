@@ -29,6 +29,10 @@ parser.add_argument("--bands", default=28, type=int, help='The number of channel
 parser.add_argument("--scene_num", default=205, type=int, help='The number of scenes of Datasets') ## 205 
 parser.add_argument("--lr", default=0.0004, type=float, help='learning rate')
 parser.add_argument("--len_shift", default=2, type=int, help=' shift length among bands')
+parser.add_argument("--spectral_mamba", action='store_true', help='Add the spectral Mamba branch (fixed A from learned spectral width) to SRB')
+parser.add_argument("--sm_width_mode", default='estimate', choices=['estimate', 'param'], help='How the spectral width is learned: per-patch estimator or global parameter')
+parser.add_argument("--sm_patch", default=4, type=int, help='Spatial patch size of one spectral sequence token')
+parser.add_argument("--sm_d_state", default=8, type=int, help='SSM state size N (number of exponential kernels)')
 opt = parser.parse_args()
 
 

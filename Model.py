@@ -7,6 +7,7 @@ import math
 import warnings
 from torch import einsum
 import time
+from SpectralMamba import SpectralMamba
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
@@ -218,15 +219,20 @@ class SAB(nn.Module):
 
 
 class SRB(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, spectral_mamba=False, sm_kwargs=None):
         super().__init__()
         self.CMB = PreNorm(dim, CMB(dim=dim))
         self.SAB = PreNorm(dim, SAB(dim=dim), norm_type='gn')
+        # Optional spectral-continuity branch: Mamba scan along the band axis with
+        # a fixed A whose decay is set by a learned spectral width.
+        self.SpecMamba = PreNorm(dim, SpectralMamba(dim=dim, **(sm_kwargs or {}))) if spectral_mamba else None
 
     def forward(self, x):
 
         x = self.CMB(x) + x
         x = self.SAB(x) + x
+        if self.SpecMamba is not None:
+            x = self.SpecMamba(x) + x
         return x
 
 
@@ -310,13 +316,19 @@ class Net(torch.nn.Module):
         self.nC = opt.bands
         self.size = opt.size
         self.initial = nn.Conv2d(self.nC * 2, self.nC, 1, 1, 0)
+        spectral_mamba = getattr(opt, 'spectral_mamba', False)
+        sm_kwargs = dict(
+            patch=getattr(opt, 'sm_patch', 4),
+            d_state=getattr(opt, 'sm_d_state', 8),
+            width_mode=getattr(opt, 'sm_width_mode', 'estimate'),
+        )
         para_estimator = []
         for i in range(opt.stage):
             para_estimator.append(Para_Estimator())
 
         for i in range(opt.stage):
             netlayer.append(SSRU(in_dim=56))
-            netlayer.append(SRB(28))
+            netlayer.append(SRB(28, spectral_mamba=spectral_mamba, sm_kwargs=sm_kwargs))
 
         self.rhos = nn.ModuleList(para_estimator)
         self.net_stage = nn.ModuleList(netlayer)
