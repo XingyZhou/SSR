@@ -320,8 +320,11 @@ class Net(torch.nn.Module):
         sm_kwargs = dict(
             patch=getattr(opt, 'sm_patch', 4),
             d_state=getattr(opt, 'sm_d_state', 8),
-            width_mode=getattr(opt, 'sm_width_mode', 'estimate'),
-            selective_dt=not getattr(opt, 'sm_fixed_dt', False),
+            width_mode=getattr(opt, 'sm_width_mode', 'fixed'),
+            sigma_init=getattr(opt, 'sm_sigma', 4.0),
+            selective_dt=not getattr(opt, 'sm_fixed_dt', True),
+            dt_fixed=getattr(opt, 'sm_dt', 1.0),
+            A_mode=getattr(opt, 'sm_A_mode', 'harmonic'),
         )
         para_estimator = []
         for i in range(opt.stage):

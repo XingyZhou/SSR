@@ -1,27 +1,22 @@
 """
-Small-scale CPU experiment: does the fixed-A spectral Mamba learn spectral continuity?
+Frozen-σ spectral Mamba: Δ is the physical band spacing, σ is a hyperparameter
+that is never updated from the training set.
 
-Part A (synthetic, controlled width)
-    Per-pixel spectra are sampled from a Gaussian process over the band axis with an
-    RBF kernel of length-scale ell in {1, 2, 4, 8} bands (one ell per 8x8 block).
-    The model is trained to recover randomly dropped / noisy bands.  If the block
-    learns spectral continuity, the estimated width sigma should increase with ell.
+  A[d, n] = -(n + 1) / σ ,   Δ = 1 band
 
-Part B (real data, Indian Pines -> 28 broad bands)
-    Same band-dropout recovery task.  Compared models (similar parameter budgets):
-      ours      : SpectralMamba, fixed A, per-patch estimated width
-      learnA    : same block, standard learnable A_log (ablation)
-      specMLP   : 1x1-conv MLP across bands (spectral context, no continuity prior)
-      spatialCNN: 3x3 conv applied to every band independently (no spectral context)
-    Reports PSNR on dropped bands, the spectral influence matrix |dy_i/dx_j|, example
-    spectra and the estimated width map vs. local spectral roughness.
+The rest of the block (B, C, gates, projections) is still trained.  The
+question is whether this prior is usable for spectral continuity, and whether
+the chosen σ matters.
+
+Part A  Synthetic GP spectra (known length-scale ell).
+        Sweep frozen σ, then match / mismatch σ against ell.
+Part B  Indian Pines (28 broad bands), same band-dropout task.
 
 Usage:
-    python Exp_spectral_continuity.py --data /path/to/Indian_pines_corrected.mat --out_dir ./exp_out
+    python Exp_spectral_continuity.py --data /tmp/hsi/ip.mat --out_dir ./exp_out
 """
 import argparse
 import json
-import math
 import os
 import time
 
@@ -36,11 +31,11 @@ from SpectralMamba import SpectralMamba
 parser = argparse.ArgumentParser()
 parser.add_argument('--data', default='/tmp/hsi/ip.mat')
 parser.add_argument('--out_dir', default='./exp_out')
-parser.add_argument('--iters', default=1500, type=int)
+parser.add_argument('--iters', default=800, type=int)
 parser.add_argument('--batch', default=8, type=int)
 parser.add_argument('--crop', default=32, type=int)
 parser.add_argument('--bands', default=28, type=int)
-parser.add_argument('--drop_p', default=0.3, type=float, help='fraction of dropped bands')
+parser.add_argument('--drop_p', default=0.3, type=float)
 parser.add_argument('--noise', default=0.02, type=float)
 parser.add_argument('--lr', default=2e-3, type=float)
 parser.add_argument('--seed', default=0, type=int)
@@ -52,7 +47,6 @@ os.makedirs(args.out_dir, exist_ok=True)
 L = args.bands
 
 
-# ----------------------------------------------------------------------------- models
 class Residual(nn.Module):
     def __init__(self, fn):
         super().__init__()
@@ -74,7 +68,7 @@ class SpectralMLP(nn.Module):
 
 
 class SpatialCNN(nn.Module):
-    """Shared 2-D CNN applied to each band separately: no spectral mixing at all."""
+    """Per-band 2-D CNN: no spectral mixing."""
     def __init__(self, hidden=16):
         super().__init__()
         self.net = nn.Sequential(nn.Conv2d(1, hidden, 3, 1, 1), nn.GELU(),
@@ -86,29 +80,22 @@ class SpatialCNN(nn.Module):
         return self.net(x.reshape(b * c, 1, h, w)).reshape(b, c, h, w)
 
 
-def build(name):
-    if name == 'ours':
-        return Residual(SpectralMamba(L, width_mode='estimate'))
-    if name == 'ours_fixdt':
-        return Residual(SpectralMamba(L, width_mode='estimate', selective_dt=False))
-    if name == 'ours_param':
-        return Residual(SpectralMamba(L, width_mode='param'))
-    if name == 'learnA':
-        return Residual(SpectralMamba(L, fixed_A=False))
-    if name == 'specMLP':
-        return Residual(SpectralMLP(L))
-    if name == 'spatialCNN':
-        return Residual(SpatialCNN())
-    raise ValueError(name)
+def prior(sigma, A_mode='harmonic'):
+    """Frozen σ, frozen Δ = 1 band.  σ is a buffer, not a parameter."""
+    return Residual(SpectralMamba(
+        L, width_mode='fixed', sigma_init=float(sigma),
+        selective_dt=False, dt_fixed=1.0, A_mode=A_mode, fixed_A=True))
 
 
 def n_params(m):
     return sum(p.numel() for p in m.parameters())
 
 
-# ----------------------------------------------------------------------------- task
+def n_trainable_sigma(m):
+    return sum(p.numel() for n, p in m.named_parameters() if 'width' in n or 'sigma' in n)
+
+
 def corrupt(x, gen):
-    """Drop a random subset of bands (set to 0) and add Gaussian noise."""
     b = x.shape[0]
     drop = torch.rand(b, L, 1, 1, generator=gen) < args.drop_p
     noise = torch.randn(x.shape, generator=gen) * args.noise
@@ -134,7 +121,7 @@ def train(model, sampler, iters, tag):
         loss.backward()
         opt.step()
         sched.step()
-        if it % 250 == 0 or it == iters - 1:
+        if it % 200 == 0 or it == iters - 1:
             print('  [%s] iter %4d loss %.5f  (%.0fs)' % (tag, it, loss.item(), time.time() - t0), flush=True)
     return model
 
@@ -148,7 +135,6 @@ def evaluate(model, gt, inp, drop):
 
 
 def spectral_jacobian(model, x):
-    """|dy_i / dx_j| averaged over pixels -> (L, L) spectral influence matrix."""
     model.eval()
     x = x.clone().requires_grad_(True)
     y = model(x)
@@ -160,18 +146,18 @@ def spectral_jacobian(model, x):
 
 
 def band_halfwidth(J):
-    """Average distance (in bands) over which an output band draws >10% of its peak influence."""
     widths = []
     for i in range(L):
-        row = J[i] / J[i].max()
+        row = J[i] / (J[i].max() + 1e-12)
         idx = torch.nonzero(row > 0.1).flatten()
-        widths.append(float((idx.max() - idx.min()).item()) / 2)
+        if len(idx) == 0:
+            widths.append(0.0)
+        else:
+            widths.append(float((idx.max() - idx.min()).item()) / 2)
     return float(np.mean(widths))
 
 
-# ----------------------------------------------------------------------------- Part A
 def gp_cube(b, h, w, ells, gen, block=8):
-    """GP spectra with RBF kernel; one length-scale per block x block region."""
     idx = torch.arange(L, dtype=torch.float32)
     chol = {}
     for ell in ells:
@@ -185,70 +171,113 @@ def gp_cube(b, h, w, ells, gen, block=8):
             for j in range(nb_w):
                 z = torch.randn(L, block * block, generator=gen)
                 s = chol[float(ell_map[bi, i, j])] @ z
-                s = 0.5 + 0.15 * s  # spectra around 0.5 with std 0.15
-                x[bi, :, i * block:(i + 1) * block, j * block:(j + 1) * block] = s.reshape(L, block, block)
+                x[bi, :, i * block:(i + 1) * block, j * block:(j + 1) * block] = (
+                    0.5 + 0.15 * s).reshape(L, block, block)
     return x.clamp(0, 1), ell_map
 
 
+def make_sampler(pool, gen):
+    return lambda b: pool[torch.randint(0, pool.shape[0], (b,), generator=gen)]
+
+
+def fit_and_score(model, sampler, gt, inp, drop, tag):
+    assert n_trainable_sigma(model) == 0, 'sigma must not be a trainable parameter'
+    model = train(model, sampler, args.iters, tag)
+    metrics, out = evaluate(model, gt, inp, drop)
+    J = spectral_jacobian(model, gt[:1, :, :16, :16])
+    metrics['influence_halfwidth_bands'] = band_halfwidth(J)
+    metrics['params'] = n_params(model)
+    print('  %-16s dropped %.2f dB | kept %.2f | half-width %.1f bands | params %d' %
+          (tag, metrics['psnr_dropped'], metrics['psnr_kept'],
+           metrics['influence_halfwidth_bands'], metrics['params']), flush=True)
+    return metrics, out, J, model
+
+
+# ----------------------------------------------------------------------------- Part A
 def part_a():
-    print('\n=== Part A: synthetic spectra with known correlation length ===')
+    print('\n=== Part A: frozen σ + Δ=1 band on synthetic GP spectra ===')
     ells = [1.0, 2.0, 4.0, 8.0]
     gen = torch.Generator().manual_seed(args.seed)
-    pool = gp_cube(512, args.crop, args.crop, ells, gen)[0]  # pre-sampled training cubes
-    sampler = lambda b: pool[torch.randint(0, pool.shape[0], (b,), generator=gen)]
+    pool = gp_cube(512, args.crop, args.crop, ells, gen)[0]
+    sampler = make_sampler(pool, gen)
 
     gen_test = torch.Generator().manual_seed(args.seed + 7)
-    gt, ell_map = gp_cube(16, args.crop, args.crop, ells, gen_test)
+    gt, _ = gp_cube(8, args.crop, args.crop, ells, gen_test)
     inp, drop = corrupt(gt, gen_test)
-    ell_patch = ell_map.repeat_interleave(2, 1).repeat_interleave(2, 2)    # block 8 -> patch 4
-    from scipy.stats import spearmanr
+    print('  input PSNR: all %.2f dB, dropped bands %.2f dB' % (psnr(inp, gt), psnr(inp, gt, drop)))
 
-    names = ['ours', 'ours_fixdt']   # selective step dt vs. step fixed to one band
-    res, sigmas = {}, {}
-    for name in names:
+    sweep = {}
+    sigmas = [1.0, 2.0, 4.0, 8.0]
+    for s in sigmas:
         torch.manual_seed(args.seed)
-        model = train(build(name), sampler, args.iters, 'synthetic/' + name)
-        metrics, _ = evaluate(model, gt, inp, drop)
-        sm = model.fn
-        with torch.no_grad():
-            sm(inp)
-        sigma = sm.last_width[:, 0]                                        # (B, H/4, W/4)
-        sigmas[name] = sigma
-        r = {'metrics': metrics, 'sigma_by_ell': {}}
-        for ell in ells:
-            s = sigma[ell_patch == ell]
-            r['sigma_by_ell'][str(ell)] = dict(mean=float(s.mean()), std=float(s.std()),
-                                              median=float(s.median()))
-            print('  [%s] true ell = %.0f bands -> estimated sigma = %.2f +- %.2f (median %.2f)' %
-                  (name, ell, s.mean(), s.std(), s.median()))
-        rho = spearmanr(ell_patch.flatten().numpy(), sigma.flatten().numpy()).correlation
-        r['spearman_ell_sigma'] = float(rho)
-        print('  [%s] Spearman(ell, sigma) = %.3f ; dropped-band PSNR = %.2f dB' %
-              (name, rho, metrics['psnr_dropped']))
-        res[name] = r
+        m = prior(s)
+        print('  prior σ=%.0f  trainable-σ params = %d  (should be 0)' % (s, n_trainable_sigma(m)))
+        metrics, _, J, _ = fit_and_score(m, sampler, gt, inp, drop, 'prior_s%.0f' % s)
+        sweep[str(s)] = dict(metrics=metrics, jacobian=J.tolist())
+
+    for name, ctor in [('specMLP', lambda: Residual(SpectralMLP(L))),
+                       ('spatialCNN', lambda: Residual(SpatialCNN()))]:
+        torch.manual_seed(args.seed)
+        metrics, _, J, _ = fit_and_score(ctor(), sampler, gt, inp, drop, name)
+        sweep[name] = dict(metrics=metrics, jacobian=J.tolist())
+
+    print('\n  --- match / mismatch: train on a single ell ---')
+    match = {}
+    for ell in (2.0, 8.0):
+        gen_e = torch.Generator().manual_seed(args.seed + int(ell))
+        pool_e = gp_cube(256, args.crop, args.crop, [ell], gen_e)[0]
+        samp_e = make_sampler(pool_e, gen_e)
+        gt_e, _ = gp_cube(8, args.crop, args.crop, [ell], torch.Generator().manual_seed(99))
+        inp_e, drop_e = corrupt(gt_e, torch.Generator().manual_seed(99))
+        row = {}
+        for s in (2.0, 8.0):
+            torch.manual_seed(args.seed)
+            tag = 'ell%.0f_sigma%.0f' % (ell, s)
+            metrics, _, _, _ = fit_and_score(prior(s), samp_e, gt_e, inp_e, drop_e, tag)
+            row[str(s)] = metrics
+        match[str(ell)] = row
+        print('  ell=%.0f: matched σ PSNR %.2f  vs  mismatched σ PSNR %.2f' %
+              (ell, row[str(ell)]['psnr_dropped'], row[str(8.0 if ell == 2.0 else 2.0)]['psnr_dropped']))
 
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(1, 4, figsize=(18, 3.8))
-    for a, name in zip(ax[:2], names):
-        a.boxplot([sigmas[name][ell_patch == e].numpy() for e in ells])
-        a.set_xticklabels([str(int(e)) for e in ells])
-        a.set_xlabel('true GP length-scale (bands)')
-        a.set_ylabel('estimated spectral width sigma (bands)')
-        a.set_title('%s: sigma vs. true width (Spearman %.2f)' % (name, res[name]['spearman_ell_sigma']))
-    im0 = ax[2].imshow(ell_patch[0].numpy(), cmap='viridis')
-    ax[2].set_title('true length-scale (one test cube)')
-    plt.colorbar(im0, ax=ax[2], fraction=0.046)
-    im1 = ax[3].imshow(sigmas['ours_fixdt'][0].numpy(), cmap='viridis')
-    ax[3].set_title('estimated sigma (ours_fixdt)')
-    plt.colorbar(im1, ax=ax[3], fraction=0.046)
-    ax[2].axis('off')
-    ax[3].axis('off')
+
+    fig, ax = plt.subplots(1, 2, figsize=(10, 3.8))
+    labels = ['σ=1', 'σ=2', 'σ=4', 'σ=8', 'specMLP', 'spatialCNN']
+    keys = ['1.0', '2.0', '4.0', '8.0', 'specMLP', 'spatialCNN']
+    dropped = [sweep[k]['metrics']['psnr_dropped'] for k in keys]
+    widths = [sweep[k]['metrics']['influence_halfwidth_bands'] for k in keys]
+    colors = ['#4C78A8'] * 4 + ['#F58518', '#54A24B']
+    ax[0].bar(labels, dropped, color=colors)
+    ax[0].axhline(psnr(inp, gt, drop), color='gray', ls='--', lw=1, label='corrupted input')
+    ax[0].set_ylabel('dropped-band PSNR (dB)')
+    ax[0].set_title('frozen-σ prior vs. baselines')
+    ax[0].legend(fontsize=8)
+    ax[1].bar(labels, widths, color=colors)
+    ax[1].set_ylabel('influence half-width (bands)')
+    ax[1].set_title('|dy_i/dx_j| half-width')
     fig.tight_layout()
-    fig.savefig(os.path.join(args.out_dir, 'fig_synthetic_width.png'), dpi=130, bbox_inches='tight')
+    fig.savefig(os.path.join(args.out_dir, 'fig_sigma_sweep.png'), dpi=130, bbox_inches='tight')
     plt.close(fig)
-    return res
+
+    fig, ax = plt.subplots(figsize=(6.5, 3.8))
+    x = np.arange(2)
+    matched = [match['2.0']['2.0']['psnr_dropped'], match['8.0']['8.0']['psnr_dropped']]
+    mismatched = [match['2.0']['8.0']['psnr_dropped'], match['8.0']['2.0']['psnr_dropped']]
+    ax.bar(x - 0.18, matched, 0.36, label='σ matches ell', color='#4C78A8')
+    ax.bar(x + 0.18, mismatched, 0.36, label='σ mismatches ell', color='#E45756')
+    ax.set_xticks(x)
+    ax.set_xticklabels(['data ell=2', 'data ell=8'])
+    ax.set_ylabel('dropped-band PSNR (dB)')
+    ax.set_title('matched vs. mismatched frozen σ')
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(args.out_dir, 'fig_match.png'), dpi=130, bbox_inches='tight')
+    plt.close(fig)
+
+    return dict(sweep={k: v['metrics'] for k, v in sweep.items()}, match=match,
+                input_psnr_dropped=psnr(inp, gt, drop))
 
 
 # ----------------------------------------------------------------------------- Part B
@@ -256,14 +285,13 @@ def load_real():
     d = sio.loadmat(args.data)
     cube = [v for k, v in d.items() if not k.startswith('__')][0].astype(np.float32)
     nb = cube.shape[2] // L
-    cube = cube[:, :, :nb * L].reshape(cube.shape[0], cube.shape[1], L, nb).mean(-1)  # L broad bands
+    cube = cube[:, :, :nb * L].reshape(cube.shape[0], cube.shape[1], L, nb).mean(-1)
     cube = cube / np.percentile(cube, 99.9)
-    cube = torch.from_numpy(cube).permute(2, 0, 1).clamp(0, 1)                    # (L, H, W)
-    return cube
+    return torch.from_numpy(cube).permute(2, 0, 1).clamp(0, 1)
 
 
 def part_b():
-    print('\n=== Part B: real data (%s) ===' % os.path.basename(args.data))
+    print('\n=== Part B: frozen σ=4, Δ=1 on Indian Pines ===')
     cube = load_real()
     _, H, W = cube.shape
     test_rows = 32
@@ -286,50 +314,25 @@ def part_b():
     inp, drop = corrupt(gt, gen_test)
     print('  input PSNR: all %.2f dB, dropped bands %.2f dB' % (psnr(inp, gt), psnr(inp, gt, drop)))
 
-    names = ['ours', 'ours_fixdt', 'learnA', 'specMLP', 'spatialCNN']
-    results, outputs, jac, models = {}, {}, {}, {}
-    for name in names:
+    constructors = [
+        ('prior_s4', lambda: prior(4.0)),
+        ('specMLP', lambda: Residual(SpectralMLP(L))),
+        ('spatialCNN', lambda: Residual(SpatialCNN())),
+    ]
+    results, outputs, jac = {}, {}, {}
+    for name, ctor in constructors:
         torch.manual_seed(args.seed)
-        model = build(name)
-        print('  model %-10s params %d' % (name, n_params(model)))
-        model = train(model, sampler, args.iters, 'real/' + name)
-        m, out = evaluate(model, gt, inp, drop)
-        m['params'] = n_params(model)
-        J = spectral_jacobian(model, gt[:, :, :16, :16])
-        m['influence_halfwidth_bands'] = band_halfwidth(J)
-        results[name], outputs[name], jac[name] = m, out[0], J
-        print('  %-10s PSNR all %.2f | dropped %.2f | kept %.2f | influence half-width %.1f bands' %
-              (name, m['psnr_all'], m['psnr_dropped'], m['psnr_kept'], m['influence_halfwidth_bands']))
-        models[name] = model
-
-    # width map vs. local spectral roughness on the full image
-    from scipy.stats import spearmanr
-    with torch.no_grad():
-        d2 = cube[2:] - 2 * cube[1:-1] + cube[:-2]
-        rough = d2.abs().mean(0) / (cube.std(0) + 1e-3)                          # (H, W)
-        pad_h, pad_w = (4 - H % 4) % 4, (4 - W % 4) % 4
-        rough = F.pad(rough[None, None], [0, pad_w, 0, pad_h], mode='reflect')
-        rough_map = F.avg_pool2d(rough, 4)[0, 0]
-    sigma_maps = {}
-    for name in ['ours', 'ours_fixdt']:
-        sm = models[name].fn
-        with torch.no_grad():
-            sm(cube[None])
-            sigma_maps[name] = sm.last_width[0, 0]                               # (H/4, W/4)
-        rho = spearmanr(rough_map.flatten().numpy(), sigma_maps[name].flatten().numpy()).correlation
-        results[name]['spearman_roughness_sigma'] = float(rho)
-        results[name]['sigma_range'] = [float(sigma_maps[name].min()), float(sigma_maps[name].max())]
-        print('  [%s] Spearman(spectral roughness, sigma) = %.3f ; sigma range [%.2f, %.2f] bands' %
-              (name, rho, sigma_maps[name].min(), sigma_maps[name].max()))
+        metrics, out, J, _ = fit_and_score(ctor(), sampler, gt, inp, drop, 'real/' + name)
+        results[name], outputs[name], jac[name] = metrics, out[0], J
 
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(1, len(names), figsize=(3.7 * len(names), 3.6))
-    for a, name in zip(ax, names):
+    fig, ax = plt.subplots(1, 3, figsize=(12, 3.6))
+    for a, name in zip(ax, [k for k, _ in constructors]):
         a.imshow(jac[name].numpy(), cmap='magma')
-        a.set_title('%s\n|dy_i/dx_j|, half-width %.1f bands' % (name, results[name]['influence_halfwidth_bands']))
+        a.set_title('%s\nhalf-width %.1f bands' % (name, results[name]['influence_halfwidth_bands']))
         a.set_xlabel('input band j')
         a.set_ylabel('output band i')
     fig.tight_layout()
@@ -338,39 +341,21 @@ def part_b():
 
     fig, ax = plt.subplots(1, 3, figsize=(15, 3.8))
     pix = [(5, 20), (16, 70), (28, 120)]
+    styles = {'prior_s4': 'b-', 'specMLP': 'm:', 'spatialCNN': 'c-.'}
     for a, (r, c) in zip(ax, pix):
         x = np.arange(L)
         a.plot(x, gt[0, :, r, c].numpy(), 'k-', lw=2, label='ground truth')
         kept = ~drop[0, :, r, c]
-        a.plot(x[kept.numpy()], inp[0, :, r, c][kept].numpy(), 'o', color='gray', ms=4, label='input (kept bands)')
-        a.plot(x[~kept.numpy()], np.zeros((~kept).sum().item()), 'x', color='red', ms=6, label='dropped bands')
-        for name, st in [('ours', 'b-'), ('ours_fixdt', 'y-'), ('learnA', 'g--'), ('specMLP', 'm:'),
-                         ('spatialCNN', 'c-.')]:
+        a.plot(x[kept.numpy()], inp[0, :, r, c][kept].numpy(), 'o', color='gray', ms=4, label='kept')
+        a.plot(x[~kept.numpy()], np.zeros((~kept).sum().item()), 'x', color='red', ms=6, label='dropped')
+        for name, st in styles.items():
             a.plot(x, outputs[name][:, r, c].numpy(), st, lw=1.3,
                    label='%s (%.1f dB)' % (name, results[name]['psnr_dropped']))
         a.set_xlabel('band')
         a.set_title('pixel (%d, %d)' % (r, c))
-    ax[0].set_ylabel('reflectance')
     ax[0].legend(fontsize=7)
     fig.tight_layout()
     fig.savefig(os.path.join(args.out_dir, 'fig_real_spectra.png'), dpi=130, bbox_inches='tight')
-    plt.close(fig)
-
-    fig, ax = plt.subplots(1, 4, figsize=(17, 4))
-    rgb = cube[[L * 2 // 3, L // 2, L // 4]].permute(1, 2, 0).numpy()
-    ax[0].imshow(np.clip(rgb / rgb.max(), 0, 1))
-    ax[0].set_title('false-colour image')
-    for a, name in zip(ax[1:3], ['ours', 'ours_fixdt']):
-        im = a.imshow(sigma_maps[name].numpy(), cmap='viridis')
-        a.set_title('sigma (bands), %s\nSpearman with roughness %.2f' % (name, results[name]['spearman_roughness_sigma']))
-        plt.colorbar(im, ax=a, fraction=0.046)
-    im2 = ax[3].imshow(rough_map.numpy(), cmap='viridis')
-    ax[3].set_title('spectral roughness |d2 x| / std')
-    plt.colorbar(im2, ax=ax[3], fraction=0.046)
-    for a in ax:
-        a.axis('off')
-    fig.tight_layout()
-    fig.savefig(os.path.join(args.out_dir, 'fig_real_width_map.png'), dpi=130, bbox_inches='tight')
     plt.close(fig)
     return results
 

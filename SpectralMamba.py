@@ -12,12 +12,12 @@ correlation width*.  Instead of learning A freely we fix its structure to
 
     A[d, n] = -(n + 1) / sigma_d ,      n = 0 .. N-1
 
-where sigma_d (in units of bands) is the only free quantity.  sigma can be a
-learnable parameter (`width_mode='param'`) or predicted from the input
-spectrum by a small estimator (`width_mode='estimate'`).  The N states then
-form a bank of exponential kernels with time constants sigma, sigma/2, ...,
-sigma/N, which together approximate a spectral response function of width
-~sigma.
+where sigma_d (in units of bands) is the spectral correlation width.  sigma
+can be a frozen hyperparameter (`width_mode='fixed'`, not trained), a
+learnable parameter (`width_mode='param'`), or predicted per patch
+(`width_mode='estimate'`).  The recommended prior is `width_mode='fixed'`
+together with `selective_dt=False` so the SSM step is one band spacing and
+the decay exp(-(n+1) * dt / sigma) is set entirely by that physical width.
 
 Implementation note
 -------------------
@@ -72,15 +72,17 @@ class FixedASSM(nn.Module):
     """
 
     def __init__(self, d_inner, d_state=8, dt_rank=4, dt_min=0.5, dt_max=2.0,
-                 dt_init_floor=1e-4, fixed_A=True, selective_dt=True):
+                 dt_init_floor=1e-4, fixed_A=True, selective_dt=True, A_mode='harmonic',
+                 dt_fixed=1.0):
         super().__init__()
+        assert A_mode in ('harmonic', 'uniform')
         self.d_inner = d_inner
         self.d_state = d_state
         self.fixed_A = fixed_A
         self.selective_dt = selective_dt
-        # With selective_dt=False the step is fixed to one band spacing, so the
-        # decay exp(-(n+1)/sigma) is controlled by the spectral width alone
-        # (B and C remain input-dependent).
+        # Physical step: one token = dt_fixed bands (default 1).  Used when
+        # selective_dt=False so the decay is exp(-(n+1)*dt_fixed/sigma).
+        self.dt_fixed = float(dt_fixed)
         self.dt_rank = dt_rank if selective_dt else 0
 
         self.x_proj = nn.Linear(d_inner, self.dt_rank + 2 * d_state, bias=False)
@@ -94,7 +96,12 @@ class FixedASSM(nn.Module):
             with torch.no_grad():
                 self.dt_proj.bias.copy_(inv_dt)
 
-        A = -torch.arange(1, d_state + 1, dtype=torch.float32)
+        # 'harmonic': rates (n+1)/sigma -> bank of kernels with widths sigma .. sigma/N
+        # 'uniform' : rate 1/sigma for every state -> sigma is the only spectral scale
+        if A_mode == 'harmonic':
+            A = -torch.arange(1, d_state + 1, dtype=torch.float32)
+        else:
+            A = -torch.ones(d_state)
         if fixed_A:
             self.register_buffer('A', A[None, :].repeat(d_inner, 1))  # (D, N), fixed
         else:  # ablation: standard Mamba parameterisation, sigma is ignored
@@ -116,7 +123,7 @@ class FixedASSM(nn.Module):
             dt = F.softplus(self.dt_proj(dt))                        # (T, L, D)
             dt = rearrange(dt, 't l d -> t d l').contiguous()
         else:
-            dt = torch.ones_like(x)                                  # one band spacing
+            dt = x.new_full(x.shape, self.dt_fixed)                  # physical band spacing
         B = rearrange(B, 't l n -> t n l').contiguous()
         C = rearrange(C, 't l n -> t n l').contiguous()
 
@@ -147,29 +154,37 @@ class SpectralMamba(nn.Module):
     patch       : spatial patch size p; d_model = p * p
     expand      : d_inner = expand * d_model
     d_state     : number of SSM states N (number of exponential kernels)
-    width_mode  : 'estimate' -> sigma predicted per patch from the input
+    width_mode  : 'fixed'    -> sigma is a frozen hyperparameter (not trained)
                   'param'    -> one learnable sigma per inner channel
+                  'estimate' -> sigma predicted per patch from the input
     sigma_min / sigma_max : bounds of sigma in bands (sigma_max defaults to dim)
-    sigma_init  : initial width in bands
+    sigma_init  : width in bands (the frozen value when width_mode='fixed')
+    dt_fixed    : SSM step in bands when selective_dt=False (physical token spacing)
     bidirectional : scan both directions (spectral correlation is symmetric)
     fixed_A     : False -> ablation with the standard learnable A_log (width unused)
-    selective_dt: False -> step fixed to one band, so sigma alone sets the decay
+    selective_dt: False -> step fixed to dt_fixed, so sigma alone sets the decay
+    A_mode      : 'harmonic' A[d,n] = -(n+1)/sigma  or  'uniform' A[d,n] = -1/sigma
+    est_hidden  : hidden width of the spectral-width estimator
     """
 
     def __init__(self, dim, patch=4, expand=2, d_state=8, d_conv=3,
-                 width_mode='estimate', sigma_min=0.5, sigma_max=None, sigma_init=4.0,
-                 bidirectional=True, fixed_A=True, selective_dt=True):
+                 width_mode='fixed', sigma_min=0.5, sigma_max=None, sigma_init=4.0,
+                 bidirectional=True, fixed_A=True, selective_dt=False, A_mode='harmonic',
+                 est_hidden=32, dt_fixed=1.0):
         super().__init__()
-        assert width_mode in ('estimate', 'param')
+        assert width_mode in ('fixed', 'estimate', 'param')
         self.dim = dim
         self.patch = patch
         self.width_mode = width_mode
         self.bidirectional = bidirectional
         self.fixed_A = fixed_A
         self.selective_dt = selective_dt
+        self.A_mode = A_mode
+        self.sigma_init = float(sigma_init)
         self.sigma_min = float(sigma_min)
         self.sigma_max = float(dim if sigma_max is None else sigma_max)
-        assert self.sigma_min < sigma_init < self.sigma_max
+        if width_mode != 'fixed':
+            assert self.sigma_min < sigma_init < self.sigma_max
 
         d_model = patch * patch
         d_inner = expand * d_model
@@ -182,23 +197,31 @@ class SpectralMamba(nn.Module):
         self.in_proj = nn.Linear(d_model, 2 * d_inner, bias=True)
         self.conv1d = nn.Conv1d(d_inner, d_inner, d_conv, padding=d_conv // 2,
                                 groups=d_inner, bias=True)
-        ssm_args = dict(d_state=d_state, dt_rank=dt_rank, fixed_A=fixed_A, selective_dt=selective_dt)
+        ssm_args = dict(d_state=d_state, dt_rank=dt_rank, fixed_A=fixed_A, selective_dt=selective_dt,
+                        A_mode=A_mode, dt_fixed=dt_fixed)
         self.ssm_fwd = FixedASSM(d_inner, **ssm_args)
         self.ssm_bwd = FixedASSM(d_inner, **ssm_args) if bidirectional else None
         self.out_proj = nn.Linear(d_inner, d_model, bias=False)
 
         # sigma = sigma_min + (sigma_max - sigma_min) * sigmoid(raw); solve raw for sigma_init
-        init_raw = math.log((sigma_init - self.sigma_min) / (self.sigma_max - sigma_init))
-        if width_mode == 'param':
+        if width_mode == 'fixed':
+            self.register_buffer('sigma_const', torch.tensor(self.sigma_init))
+        elif width_mode == 'param':
+            init_raw = math.log((sigma_init - self.sigma_min) / (self.sigma_max - sigma_init))
             self.width_raw = nn.Parameter(torch.full((d_inner,), init_raw))
         else:
+            init_raw = math.log((sigma_init - self.sigma_min) / (self.sigma_max - sigma_init))
+            # Bands must be mixed *before* a nonlinearity, otherwise the estimator is a
+            # linear function of the spectrum and cannot measure its smoothness.
             self.width_est = nn.Sequential(
-                nn.Conv2d(dim, dim, 3, 1, 1, groups=dim, bias=False),
+                nn.Conv2d(dim, est_hidden, 1, 1, 0, bias=True),
                 nn.GELU(),
-                nn.Conv2d(dim, 1, 1, 1, 0, bias=True),
+                nn.Conv2d(est_hidden, est_hidden, 3, 1, 1, groups=est_hidden, bias=True),
+                nn.GELU(),
+                nn.Conv2d(est_hidden, 1, 1, 1, 0, bias=True),
             )
-            nn.init.trunc_normal_(self.width_est[2].weight, std=.02)
-            nn.init.constant_(self.width_est[2].bias, init_raw)
+            nn.init.trunc_normal_(self.width_est[4].weight, std=.02)
+            nn.init.constant_(self.width_est[4].bias, init_raw)
 
         self.last_width = None  # (B, 1, H/p, W/p) of the last forward, for inspection
         # in_proj / out_proj keep the default nn.Linear init (as in Mamba). A small
@@ -206,6 +229,10 @@ class SpectralMamba(nn.Module):
         # (x_in, silu(z), W_out) and training stalls at that saddle.
 
     def _sigma(self, x, hp, wp):
+        if self.width_mode == 'fixed':
+            sigma = self.sigma_const.to(dtype=x.dtype, device=x.device).view(1, 1)
+            self.last_width = sigma.detach()
+            return sigma
         if self.width_mode == 'param':
             raw = self.width_raw[None, :]                                     # (1, D)
             sigma = self.sigma_min + (self.sigma_max - self.sigma_min) * torch.sigmoid(raw)
@@ -250,6 +277,8 @@ class SpectralMamba(nn.Module):
         A = self.ssm_fwd.get_A()                                               # (D, N)
         if sigma is None or not self.fixed_A:
             return A
+        if self.width_mode == 'fixed':
+            return A / float(sigma.reshape(-1)[0].item() if torch.is_tensor(sigma) else sigma)
         if self.width_mode == 'param':                                        # sigma: (1, D)
             return A / sigma.reshape(-1, 1)                                    # (D, N)
         return A[None] / sigma.reshape(-1, 1, 1)                               # (T, D, N)
