@@ -1,0 +1,119 @@
+{
+  "args": {
+    "data": "/tmp/hsi/ip.mat",
+    "out_dir": "/workspace/exp_out",
+    "iters": 800,
+    "batch": 8,
+    "crop": 32,
+    "bands": 28,
+    "drop_p": 0.3,
+    "noise": 0.02,
+    "lr": 0.002,
+    "seed": 0,
+    "threads": 4
+  },
+  "synthetic": {
+    "sweep": {
+      "1.0": {
+        "psnr_all": 21.460397720336914,
+        "psnr_dropped": 17.15815544128418,
+        "psnr_kept": 33.716190338134766,
+        "influence_halfwidth_bands": 0.0,
+        "params": 2816
+      },
+      "2.0": {
+        "psnr_all": 21.41372299194336,
+        "psnr_dropped": 17.10638427734375,
+        "psnr_kept": 33.7996711730957,
+        "influence_halfwidth_bands": 0.0,
+        "params": 2816
+      },
+      "4.0": {
+        "psnr_all": 21.303377151489258,
+        "psnr_dropped": 17.005741119384766,
+        "psnr_kept": 33.44489288330078,
+        "influence_halfwidth_bands": 0.0,
+        "params": 2816
+      },
+      "8.0": {
+        "psnr_all": 21.109636306762695,
+        "psnr_dropped": 16.80525016784668,
+        "psnr_kept": 33.41971969604492,
+        "influence_halfwidth_bands": 0.0,
+        "params": 2816
+      },
+      "specMLP": {
+        "psnr_all": 18.130674362182617,
+        "psnr_dropped": 16.23059844970703,
+        "psnr_kept": 19.710283279418945,
+        "influence_halfwidth_bands": 10.839285714285714,
+        "params": 7836
+      },
+      "spatialCNN": {
+        "psnr_all": 20.793752670288086,
+        "psnr_dropped": 16.46739959716797,
+        "psnr_kept": 33.70463562011719,
+        "influence_halfwidth_bands": 0.0,
+        "params": 2625
+      }
+    },
+    "match": {
+      "2.0": {
+        "2.0": {
+          "psnr_all": 22.888526916503906,
+          "psnr_dropped": 17.139915466308594,
+          "psnr_kept": 33.806766510009766,
+          "influence_halfwidth_bands": 0.0,
+          "params": 2816
+        },
+        "8.0": {
+          "psnr_all": 22.552074432373047,
+          "psnr_dropped": 16.80563735961914,
+          "psnr_kept": 33.43682861328125,
+          "influence_halfwidth_bands": 0.0,
+          "params": 2816
+        }
+      },
+      "8.0": {
+        "2.0": {
+          "psnr_all": 23.185794830322266,
+          "psnr_dropped": 17.492820739746094,
+          "psnr_kept": 33.32322311401367,
+          "influence_halfwidth_bands": 0.0,
+          "params": 2816
+        },
+        "8.0": {
+          "psnr_all": 22.827102661132812,
+          "psnr_dropped": 17.100709915161133,
+          "psnr_kept": 33.415313720703125,
+          "influence_halfwidth_bands": 0.0,
+          "params": 2816
+        }
+      }
+    },
+    "input_psnr_dropped": 5.653003692626953
+  },
+  "real": {
+    "prior_s4": {
+      "psnr_all": 24.502208709716797,
+      "psnr_dropped": 18.99163055419922,
+      "psnr_kept": 32.807289123535156,
+      "influence_halfwidth_bands": 0.0,
+      "params": 2816
+    },
+    "specMLP": {
+      "psnr_all": 24.73088836669922,
+      "psnr_dropped": 22.18714714050293,
+      "psnr_kept": 26.07053565979004,
+      "influence_halfwidth_bands": 9.642857142857142,
+      "params": 7836
+    },
+    "spatialCNN": {
+      "psnr_all": 19.30039405822754,
+      "psnr_dropped": 13.435239791870117,
+      "psnr_kept": 32.59058380126953,
+      "influence_halfwidth_bands": 0.0,
+      "params": 2625
+    }
+  }
+}
