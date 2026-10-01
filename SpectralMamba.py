@@ -72,11 +72,12 @@ class FixedASSM(nn.Module):
     """
 
     def __init__(self, d_inner, d_state=8, dt_rank=4, dt_min=0.5, dt_max=2.0,
-                 dt_init_floor=1e-4):
+                 dt_init_floor=1e-4, fixed_A=True):
         super().__init__()
         self.d_inner = d_inner
         self.d_state = d_state
         self.dt_rank = dt_rank
+        self.fixed_A = fixed_A
 
         self.x_proj = nn.Linear(d_inner, dt_rank + 2 * d_state, bias=False)
         self.dt_proj = nn.Linear(dt_rank, d_inner, bias=True)
@@ -90,8 +91,14 @@ class FixedASSM(nn.Module):
             self.dt_proj.bias.copy_(inv_dt)
 
         A = -torch.arange(1, d_state + 1, dtype=torch.float32)
-        self.register_buffer('A', A[None, :].repeat(d_inner, 1))  # (D, N), fixed
+        if fixed_A:
+            self.register_buffer('A', A[None, :].repeat(d_inner, 1))  # (D, N), fixed
+        else:  # ablation: standard Mamba parameterisation, sigma is ignored
+            self.A_log = nn.Parameter(torch.log(-A)[None, :].repeat(d_inner, 1))
         self.D = nn.Parameter(torch.ones(d_inner))
+
+    def get_A(self):
+        return self.A if self.fixed_A else -torch.exp(self.A_log)
 
     def forward(self, x, sigma):
         """
@@ -106,12 +113,15 @@ class FixedASSM(nn.Module):
         B = rearrange(B, 't l n -> t n l').contiguous()
         C = rearrange(C, 't l n -> t n l').contiguous()
 
+        A = self.get_A()
+        if not self.fixed_A:
+            sigma = torch.ones(1, 1, device=x.device)
         if selective_scan_fn is not None and x.is_cuda:
             s = sigma.unsqueeze(-1).to(x.dtype)
-            y = selective_scan_fn((x * s).contiguous(), (dt / s).contiguous(), self.A,
+            y = selective_scan_fn((x * s).contiguous(), (dt / s).contiguous(), A.contiguous(),
                                   B, C, D=None, z=None, delta_bias=None, delta_softplus=False)
         else:
-            y = selective_scan_ref(x, dt, self.A, B, C, sigma.to(x.dtype))
+            y = selective_scan_ref(x, dt, A, B, C, sigma.to(x.dtype))
         return y + x * self.D[None, :, None]
 
 
@@ -135,17 +145,19 @@ class SpectralMamba(nn.Module):
     sigma_min / sigma_max : bounds of sigma in bands (sigma_max defaults to dim)
     sigma_init  : initial width in bands
     bidirectional : scan both directions (spectral correlation is symmetric)
+    fixed_A     : False -> ablation with the standard learnable A_log (width unused)
     """
 
     def __init__(self, dim, patch=4, expand=2, d_state=8, d_conv=3,
                  width_mode='estimate', sigma_min=0.5, sigma_max=None, sigma_init=4.0,
-                 bidirectional=True):
+                 bidirectional=True, fixed_A=True):
         super().__init__()
         assert width_mode in ('estimate', 'param')
         self.dim = dim
         self.patch = patch
         self.width_mode = width_mode
         self.bidirectional = bidirectional
+        self.fixed_A = fixed_A
         self.sigma_min = float(sigma_min)
         self.sigma_max = float(dim if sigma_max is None else sigma_max)
         assert self.sigma_min < sigma_init < self.sigma_max
@@ -158,8 +170,8 @@ class SpectralMamba(nn.Module):
         self.in_proj = nn.Linear(d_model, 2 * d_inner, bias=False)
         self.conv1d = nn.Conv1d(d_inner, d_inner, d_conv, padding=d_conv // 2,
                                 groups=d_inner, bias=True)
-        self.ssm_fwd = FixedASSM(d_inner, d_state=d_state, dt_rank=dt_rank)
-        self.ssm_bwd = FixedASSM(d_inner, d_state=d_state, dt_rank=dt_rank) if bidirectional else None
+        self.ssm_fwd = FixedASSM(d_inner, d_state=d_state, dt_rank=dt_rank, fixed_A=fixed_A)
+        self.ssm_bwd = FixedASSM(d_inner, d_state=d_state, dt_rank=dt_rank, fixed_A=fixed_A) if bidirectional else None
         self.out_proj = nn.Linear(d_inner, d_model, bias=False)
 
         # sigma = sigma_min + (sigma_max - sigma_min) * sigmoid(raw); solve raw for sigma_init
@@ -221,8 +233,8 @@ class SpectralMamba(nn.Module):
         """Return the effective state matrix -(n + 1) / sigma for inspection."""
         if sigma is None:
             sigma = self.last_width
-        A = self.ssm_fwd.A                                                     # (D, N)
-        if sigma is None:
+        A = self.ssm_fwd.get_A()                                               # (D, N)
+        if sigma is None or not self.fixed_A:
             return A
         if self.width_mode == 'param':                                        # sigma: (1, D)
             return A / sigma.reshape(-1, 1)                                    # (D, N)
