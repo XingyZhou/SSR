@@ -28,10 +28,10 @@ def arguement_1(x):
 
 
 def arguement_2(generate_gt):
-    c, h, w = generate_gt.shape[1],256,256
-    divid_point_h = h//2
-    divid_point_w = w//2
-    output_img = torch.zeros(c,h,w).cuda()
+    c, h, w = generate_gt.shape[1], generate_gt.shape[2] * 2, generate_gt.shape[3] * 2
+    divid_point_h = h // 2
+    divid_point_w = w // 2
+    output_img = torch.zeros(c, h, w, device=generate_gt.device, dtype=generate_gt.dtype)
     output_img[:, :divid_point_h, :divid_point_w] = generate_gt[0]
     output_img[:, :divid_point_h, divid_point_w:] = generate_gt[1]
     output_img[:, divid_point_h:, :divid_point_w] = generate_gt[2]
@@ -53,28 +53,32 @@ class dataset(tud.Dataset):
         else:
             self.num = opt.testset_num
         self.HSI = HSI
+        self.device = get_device()
 
-        ## load mask
+        ## load mask (crop to the training patch size)
         data = sio.loadmat(opt.mask_path)
-        self.mask = data['mask']
+        mask = data['mask']
+        if mask.shape[0] < self.size or mask.shape[1] < self.size:
+            raise ValueError('mask %s is smaller than --size %d' % (mask.shape, self.size))
+        self.mask = mask[:self.size, :self.size]
 
     def __getitem__(self, index):
         if self.isTrain:
             arg1 = random.randint(1, 2)
-            temp = torch.zeros((self.nC, self.size, self.size)).cuda()
+            temp = torch.zeros((self.nC, self.size, self.size), device=self.device)
             for i in range(arg1):
                 arg2 = random.randint(1, 2)
-                if arg2 == 1:
+                if arg2 == 1 or self.size != 256:
                     index1 = random.randint(0, self.scene_num - 1)
                     hsi = self.HSI[:, :, :, index1]
                     shape = np.shape(hsi)
                     px = random.randint(0, shape[0] - self.size)
                     py = random.randint(0, shape[1] - self.size)
                     label = hsi[px:px + self.size:1, py:py + self.size:1, :]
-                    label = torch.from_numpy(np.transpose(label, (2, 0, 1))).cuda().float()
+                    label = torch.from_numpy(np.transpose(label, (2, 0, 1))).to(self.device).float()
                     label = arguement_1(label)
                 else:
-                    processed_data = np.zeros((4, 128, 128, 28))
+                    processed_data = np.zeros((4, self.size // 2, self.size // 2, 28))
                     sample_list = np.random.randint(0, self.scene_num, 4)
                     h, w, _ = self.HSI[:, :, :, 0].shape
                     for i in range(4):
@@ -82,7 +86,7 @@ class dataset(tud.Dataset):
                         py = random.randint(0, w - self.size // 2)
                         processed_data[i] = self.HSI[:, :, :, sample_list[i]][px:px + self.size // 2,
                                             py:py + self.size // 2, :]
-                    label = torch.from_numpy(np.transpose(processed_data, (0, 3, 1, 2))).cuda()
+                    label = torch.from_numpy(np.transpose(processed_data, (0, 3, 1, 2))).to(self.device)
                     label = arguement_2(label)
                 if arg1 == 1:
                     temp = label
@@ -90,18 +94,18 @@ class dataset(tud.Dataset):
                     temp = temp + label / 2
             label = temp
             mask = self.mask
-            mask = torch.from_numpy(np.transpose(mask, (2, 0, 1))).cuda().float()
+            mask = torch.from_numpy(np.transpose(mask, (2, 0, 1))).to(self.device).float()
 
         else:
             index1 = index % (1 * 1)
             index2 = index // (1 * 1)
             hsi = self.HSI[:, :, :, index2]
-            px = index1 // 1 * 256
-            py = index1 % 1 * 256
+            px = index1 // 1 * self.size
+            py = index1 % 1 * self.size
             label = hsi[px:px + self.size:1, py:py + self.size:1, :]
-            label = torch.from_numpy(np.transpose(label, (2, 0, 1))).cuda().float()
+            label = torch.from_numpy(np.transpose(label, (2, 0, 1))).to(self.device).float()
             mask = self.mask
-            mask = torch.from_numpy(np.transpose(mask, (2, 0, 1))).cuda().float()
+            mask = torch.from_numpy(np.transpose(mask, (2, 0, 1))).to(self.device).float()
 
         Phi_batch = mask
         g = shift_3(mask * label, len_shift=self.len_shift)
