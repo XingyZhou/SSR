@@ -32,7 +32,7 @@ parser.add_argument("--epochs", default=300, type=int, help='Number of training 
 parser.add_argument("--ckpt_dir", default="./Checkpoint", type=str, help='Checkpoint directory')
 parser.add_argument("--ip_path", default="/tmp/hsi/ip.mat", type=str, help='Indian Pines fallback if CAVE files are missing')
 parser.add_argument("--len_shift", default=2, type=int, help=' shift length among bands')
-parser.add_argument("--spectral_mamba", action='store_true', help='Add the spectral Mamba branch (fixed A from spectral width) to SRB')
+parser.add_argument("--spectral_mamba", action='store_true', help='Replace CMB+SAB with SpecMamba as the spectral token mixer (dim==bands only)')
 parser.add_argument("--sm_width_mode", default='fixed', choices=['fixed', 'estimate', 'param'], help='fixed: frozen sigma hyperparameter; estimate/param: learned width')
 parser.add_argument("--sm_sigma", default=4.0, type=float, help='Spectral width in bands (frozen when sm_width_mode=fixed)')
 parser.add_argument("--sm_patch", default=4, type=int, help='Spatial patch size of one spectral sequence token')

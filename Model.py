@@ -221,28 +221,36 @@ class SAB(nn.Module):
 class SRB(nn.Module):
     def __init__(self, dim, spectral_mamba=False, sm_kwargs=None):
         super().__init__()
-        self.CMB = PreNorm(dim, CMB(dim=dim))
-        self.SAB = PreNorm(dim, SAB(dim=dim), norm_type='gn')
-        # Optional spectral-continuity branch: Mamba scan along the band axis with
-        # a fixed A whose decay is set by a learned spectral width.
-        self.SpecMamba = PreNorm(dim, SpectralMamba(dim=dim, **(sm_kwargs or {}))) if spectral_mamba else None
+        # Spectral token mixer: original CMB+SAB, or SpecMamba as a *replacement*
+        # (not an extra residual). Spatial mixing stays in SARB/WSSA.
+        self.use_mamba = bool(spectral_mamba)
+        if self.use_mamba:
+            self.SpecMamba = PreNorm(dim, SpectralMamba(dim=dim, **(sm_kwargs or {})))
+            self.CMB = None
+            self.SAB = None
+        else:
+            self.CMB = PreNorm(dim, CMB(dim=dim))
+            self.SAB = PreNorm(dim, SAB(dim=dim), norm_type='gn')
+            self.SpecMamba = None
 
     def forward(self, x):
-
-        x = self.CMB(x) + x
-        x = self.SAB(x) + x
-        if self.SpecMamba is not None:
+        if self.use_mamba:
             x = self.SpecMamba(x) + x
+        else:
+            x = self.CMB(x) + x
+            x = self.SAB(x) + x
         return x
 
 
 class SSRB(nn.Module):
-    def __init__(self, dim, window_size=(8, 8), dim_head=28, heads=1):
+    def __init__(self, dim, window_size=(8, 8), dim_head=28, heads=1,
+                 spectral_mamba=False, sm_kwargs=None):
         super().__init__()
 
         self.pos = nn.Conv2d(dim, dim, 5, 1, 2, groups=dim)
         self.SARB = SARB(dim, window_size, dim_head, heads)
-        self.SRB = SRB(dim)
+        # Only replace the spectral mixer when dim == number of bands (true spectra).
+        self.SRB = SRB(dim, spectral_mamba=spectral_mamba, sm_kwargs=sm_kwargs)
 
     def forward(self, x):
 
@@ -265,11 +273,12 @@ class Mask_embedding(nn.Module):
 
 
 class SSRU(nn.Module):
-    def __init__(self, in_dim=56, out_dim=28):
+    def __init__(self, in_dim=56, out_dim=28, spectral_mamba=False, sm_kwargs=None):
         super(SSRU, self).__init__()
 
         self.mask_embedding = Mask_embedding()
-        self.down1 = SSRB(dim=28, dim_head=28, heads=1)
+        sm28 = dict(spectral_mamba=spectral_mamba, sm_kwargs=sm_kwargs)
+        self.down1 = SSRB(dim=28, dim_head=28, heads=1, **sm28)
         self.downsample1 = nn.Conv2d(28, 56, 4, 2, 1, bias=False)
         self.down2 = SSRB(dim=56, dim_head=28, heads=2)
         self.downsample2 = nn.Conv2d(56, 112, 4, 2, 1, bias=False)
@@ -279,7 +288,7 @@ class SSRU(nn.Module):
         self.up2 = SSRB(dim=56, dim_head=28, heads=2)
         self.upsample1 = nn.ConvTranspose2d(56, 28, 2, 2)
         self.fusion1 = nn.Conv2d(56, 28, 1, 1, 0, bias=False)
-        self.up1 = SSRB(dim=28, dim_head=28, heads=1)
+        self.up1 = SSRB(dim=28, dim_head=28, heads=1, **sm28)
         self.out = nn.Conv2d(28, out_dim, 3, 1, 1, bias=False)
 
     def forward(self, x, mask):
@@ -331,7 +340,7 @@ class Net(torch.nn.Module):
             para_estimator.append(Para_Estimator())
 
         for i in range(opt.stage):
-            netlayer.append(SSRU(in_dim=56))
+            netlayer.append(SSRU(in_dim=56, spectral_mamba=spectral_mamba, sm_kwargs=sm_kwargs))
             netlayer.append(SRB(28, spectral_mamba=spectral_mamba, sm_kwargs=sm_kwargs))
 
         self.rhos = nn.ModuleList(para_estimator)
