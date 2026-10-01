@@ -167,7 +167,10 @@ class SpectralMamba(nn.Module):
         dt_rank = max(1, math.ceil(d_model / 4))
         self.d_inner = d_inner
 
-        self.in_proj = nn.Linear(d_model, 2 * d_inner, bias=False)
+        # bias=True matters: without it an all-zero band token gives z = 0 and the
+        # SiLU gate silences the output at that band even though the SSM state
+        # carries information from neighbouring bands.
+        self.in_proj = nn.Linear(d_model, 2 * d_inner, bias=True)
         self.conv1d = nn.Conv1d(d_inner, d_inner, d_conv, padding=d_conv // 2,
                                 groups=d_inner, bias=True)
         self.ssm_fwd = FixedASSM(d_inner, d_state=d_state, dt_rank=dt_rank, fixed_A=fixed_A)
@@ -188,8 +191,9 @@ class SpectralMamba(nn.Module):
             nn.init.constant_(self.width_est[2].bias, init_raw)
 
         self.last_width = None  # (B, 1, H/p, W/p) of the last forward, for inspection
-        nn.init.trunc_normal_(self.in_proj.weight, std=.02)
-        nn.init.trunc_normal_(self.out_proj.weight, std=.02)
+        # in_proj / out_proj keep the default nn.Linear init (as in Mamba). A small
+        # (std 0.02) init makes the output a product of three near-zero factors
+        # (x_in, silu(z), W_out) and training stalls at that saddle.
 
     def _sigma(self, x, hp, wp):
         if self.width_mode == 'param':

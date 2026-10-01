@@ -192,7 +192,9 @@ def part_a():
     print('\n=== Part A: synthetic spectra with known correlation length ===')
     ells = [1.0, 2.0, 4.0, 8.0]
     gen = torch.Generator().manual_seed(args.seed)
-    sampler = lambda b: gp_cube(b, args.crop, args.crop, ells, gen)[0]
+    pool = gp_cube(512, args.crop, args.crop, ells, gen)[0]  # pre-sampled training cubes
+    sampler = lambda b: pool[torch.randint(0, pool.shape[0], (b,), generator=gen)]
+    torch.manual_seed(args.seed)
     model = train(build('ours'), sampler, args.iters, 'synthetic/ours')
 
     gen_test = torch.Generator().manual_seed(args.seed + 7)
