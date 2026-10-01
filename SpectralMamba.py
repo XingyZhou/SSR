@@ -72,23 +72,27 @@ class FixedASSM(nn.Module):
     """
 
     def __init__(self, d_inner, d_state=8, dt_rank=4, dt_min=0.5, dt_max=2.0,
-                 dt_init_floor=1e-4, fixed_A=True):
+                 dt_init_floor=1e-4, fixed_A=True, selective_dt=True):
         super().__init__()
         self.d_inner = d_inner
         self.d_state = d_state
-        self.dt_rank = dt_rank
         self.fixed_A = fixed_A
+        self.selective_dt = selective_dt
+        # With selective_dt=False the step is fixed to one band spacing, so the
+        # decay exp(-(n+1)/sigma) is controlled by the spectral width alone
+        # (B and C remain input-dependent).
+        self.dt_rank = dt_rank if selective_dt else 0
 
-        self.x_proj = nn.Linear(d_inner, dt_rank + 2 * d_state, bias=False)
-        self.dt_proj = nn.Linear(dt_rank, d_inner, bias=True)
-
-        dt_init_std = dt_rank ** -0.5
-        nn.init.uniform_(self.dt_proj.weight, -dt_init_std, dt_init_std)
-        dt = torch.exp(torch.rand(d_inner) * (math.log(dt_max) - math.log(dt_min))
-                       + math.log(dt_min)).clamp(min=dt_init_floor)
-        inv_dt = dt + torch.log(-torch.expm1(-dt))  # inverse of softplus
-        with torch.no_grad():
-            self.dt_proj.bias.copy_(inv_dt)
+        self.x_proj = nn.Linear(d_inner, self.dt_rank + 2 * d_state, bias=False)
+        if selective_dt:
+            self.dt_proj = nn.Linear(dt_rank, d_inner, bias=True)
+            dt_init_std = dt_rank ** -0.5
+            nn.init.uniform_(self.dt_proj.weight, -dt_init_std, dt_init_std)
+            dt = torch.exp(torch.rand(d_inner) * (math.log(dt_max) - math.log(dt_min))
+                           + math.log(dt_min)).clamp(min=dt_init_floor)
+            inv_dt = dt + torch.log(-torch.expm1(-dt))  # inverse of softplus
+            with torch.no_grad():
+                self.dt_proj.bias.copy_(inv_dt)
 
         A = -torch.arange(1, d_state + 1, dtype=torch.float32)
         if fixed_A:
@@ -108,8 +112,11 @@ class FixedASSM(nn.Module):
         T, D, L = x.shape
         x_dbl = self.x_proj(rearrange(x, 't d l -> t l d'))
         dt, B, C = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=-1)
-        dt = F.softplus(self.dt_proj(dt))                            # (T, L, D)
-        dt = rearrange(dt, 't l d -> t d l').contiguous()
+        if self.selective_dt:
+            dt = F.softplus(self.dt_proj(dt))                        # (T, L, D)
+            dt = rearrange(dt, 't l d -> t d l').contiguous()
+        else:
+            dt = torch.ones_like(x)                                  # one band spacing
         B = rearrange(B, 't l n -> t n l').contiguous()
         C = rearrange(C, 't l n -> t n l').contiguous()
 
@@ -146,11 +153,12 @@ class SpectralMamba(nn.Module):
     sigma_init  : initial width in bands
     bidirectional : scan both directions (spectral correlation is symmetric)
     fixed_A     : False -> ablation with the standard learnable A_log (width unused)
+    selective_dt: False -> step fixed to one band, so sigma alone sets the decay
     """
 
     def __init__(self, dim, patch=4, expand=2, d_state=8, d_conv=3,
                  width_mode='estimate', sigma_min=0.5, sigma_max=None, sigma_init=4.0,
-                 bidirectional=True, fixed_A=True):
+                 bidirectional=True, fixed_A=True, selective_dt=True):
         super().__init__()
         assert width_mode in ('estimate', 'param')
         self.dim = dim
@@ -158,6 +166,7 @@ class SpectralMamba(nn.Module):
         self.width_mode = width_mode
         self.bidirectional = bidirectional
         self.fixed_A = fixed_A
+        self.selective_dt = selective_dt
         self.sigma_min = float(sigma_min)
         self.sigma_max = float(dim if sigma_max is None else sigma_max)
         assert self.sigma_min < sigma_init < self.sigma_max
@@ -173,8 +182,9 @@ class SpectralMamba(nn.Module):
         self.in_proj = nn.Linear(d_model, 2 * d_inner, bias=True)
         self.conv1d = nn.Conv1d(d_inner, d_inner, d_conv, padding=d_conv // 2,
                                 groups=d_inner, bias=True)
-        self.ssm_fwd = FixedASSM(d_inner, d_state=d_state, dt_rank=dt_rank, fixed_A=fixed_A)
-        self.ssm_bwd = FixedASSM(d_inner, d_state=d_state, dt_rank=dt_rank, fixed_A=fixed_A) if bidirectional else None
+        ssm_args = dict(d_state=d_state, dt_rank=dt_rank, fixed_A=fixed_A, selective_dt=selective_dt)
+        self.ssm_fwd = FixedASSM(d_inner, **ssm_args)
+        self.ssm_bwd = FixedASSM(d_inner, **ssm_args) if bidirectional else None
         self.out_proj = nn.Linear(d_inner, d_model, bias=False)
 
         # sigma = sigma_min + (sigma_max - sigma_min) * sigmoid(raw); solve raw for sigma_init

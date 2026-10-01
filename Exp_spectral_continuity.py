@@ -89,6 +89,8 @@ class SpatialCNN(nn.Module):
 def build(name):
     if name == 'ours':
         return Residual(SpectralMamba(L, width_mode='estimate'))
+    if name == 'ours_fixdt':
+        return Residual(SpectralMamba(L, width_mode='estimate', selective_dt=False))
     if name == 'ours_param':
         return Residual(SpectralMamba(L, width_mode='param'))
     if name == 'learnA':
@@ -194,47 +196,55 @@ def part_a():
     gen = torch.Generator().manual_seed(args.seed)
     pool = gp_cube(512, args.crop, args.crop, ells, gen)[0]  # pre-sampled training cubes
     sampler = lambda b: pool[torch.randint(0, pool.shape[0], (b,), generator=gen)]
-    torch.manual_seed(args.seed)
-    model = train(build('ours'), sampler, args.iters, 'synthetic/ours')
 
     gen_test = torch.Generator().manual_seed(args.seed + 7)
     gt, ell_map = gp_cube(16, args.crop, args.crop, ells, gen_test)
     inp, drop = corrupt(gt, gen_test)
-    metrics, _ = evaluate(model, gt, inp, drop)
-    sm = model.fn
-    with torch.no_grad():
-        sm(inp)
-    sigma = sm.last_width[:, 0]                                            # (B, H/4, W/4)
     ell_patch = ell_map.repeat_interleave(2, 1).repeat_interleave(2, 2)    # block 8 -> patch 4
-    res = {'metrics': metrics, 'sigma_by_ell': {}}
-    for ell in ells:
-        s = sigma[ell_patch == ell]
-        res['sigma_by_ell'][str(ell)] = dict(mean=float(s.mean()), std=float(s.std()),
-                                            median=float(s.median()))
-        print('  true ell = %.0f bands -> estimated sigma = %.2f +- %.2f (median %.2f)' %
-              (ell, s.mean(), s.std(), s.median()))
     from scipy.stats import spearmanr
-    rho = spearmanr(ell_patch.flatten().numpy(), sigma.flatten().numpy()).correlation
-    res['spearman_ell_sigma'] = float(rho)
-    print('  Spearman(ell, sigma) = %.3f ; dropped-band PSNR = %.2f dB' % (rho, metrics['psnr_dropped']))
+
+    names = ['ours', 'ours_fixdt']   # selective step dt vs. step fixed to one band
+    res, sigmas = {}, {}
+    for name in names:
+        torch.manual_seed(args.seed)
+        model = train(build(name), sampler, args.iters, 'synthetic/' + name)
+        metrics, _ = evaluate(model, gt, inp, drop)
+        sm = model.fn
+        with torch.no_grad():
+            sm(inp)
+        sigma = sm.last_width[:, 0]                                        # (B, H/4, W/4)
+        sigmas[name] = sigma
+        r = {'metrics': metrics, 'sigma_by_ell': {}}
+        for ell in ells:
+            s = sigma[ell_patch == ell]
+            r['sigma_by_ell'][str(ell)] = dict(mean=float(s.mean()), std=float(s.std()),
+                                              median=float(s.median()))
+            print('  [%s] true ell = %.0f bands -> estimated sigma = %.2f +- %.2f (median %.2f)' %
+                  (name, ell, s.mean(), s.std(), s.median()))
+        rho = spearmanr(ell_patch.flatten().numpy(), sigma.flatten().numpy()).correlation
+        r['spearman_ell_sigma'] = float(rho)
+        print('  [%s] Spearman(ell, sigma) = %.3f ; dropped-band PSNR = %.2f dB' %
+              (name, rho, metrics['psnr_dropped']))
+        res[name] = r
 
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(1, 3, figsize=(14, 3.8))
-    ax[0].boxplot([sigma[ell_patch == e].numpy() for e in ells])
-    ax[0].set_xticklabels([str(int(e)) for e in ells])
-    ax[0].set_xlabel('true GP length-scale (bands)')
-    ax[0].set_ylabel('estimated spectral width sigma (bands)')
-    ax[0].set_title('learned width vs. true width  (Spearman %.2f)' % rho)
-    im0 = ax[1].imshow(ell_patch[0].numpy(), cmap='viridis')
-    ax[1].set_title('true length-scale (one test cube)')
-    plt.colorbar(im0, ax=ax[1], fraction=0.046)
-    im1 = ax[2].imshow(sigma[0].numpy(), cmap='viridis')
-    ax[2].set_title('estimated sigma')
-    plt.colorbar(im1, ax=ax[2], fraction=0.046)
-    ax[1].axis('off')
+    fig, ax = plt.subplots(1, 4, figsize=(18, 3.8))
+    for a, name in zip(ax[:2], names):
+        a.boxplot([sigmas[name][ell_patch == e].numpy() for e in ells])
+        a.set_xticklabels([str(int(e)) for e in ells])
+        a.set_xlabel('true GP length-scale (bands)')
+        a.set_ylabel('estimated spectral width sigma (bands)')
+        a.set_title('%s: sigma vs. true width (Spearman %.2f)' % (name, res[name]['spearman_ell_sigma']))
+    im0 = ax[2].imshow(ell_patch[0].numpy(), cmap='viridis')
+    ax[2].set_title('true length-scale (one test cube)')
+    plt.colorbar(im0, ax=ax[2], fraction=0.046)
+    im1 = ax[3].imshow(sigmas['ours_fixdt'][0].numpy(), cmap='viridis')
+    ax[3].set_title('estimated sigma (ours_fixdt)')
+    plt.colorbar(im1, ax=ax[3], fraction=0.046)
     ax[2].axis('off')
+    ax[3].axis('off')
     fig.tight_layout()
     fig.savefig(os.path.join(args.out_dir, 'fig_synthetic_width.png'), dpi=130, bbox_inches='tight')
     plt.close(fig)
@@ -276,8 +286,8 @@ def part_b():
     inp, drop = corrupt(gt, gen_test)
     print('  input PSNR: all %.2f dB, dropped bands %.2f dB' % (psnr(inp, gt), psnr(inp, gt, drop)))
 
-    names = ['ours', 'learnA', 'specMLP', 'spatialCNN']
-    results, outputs, jac = {}, {}, {}
+    names = ['ours', 'ours_fixdt', 'learnA', 'specMLP', 'spatialCNN']
+    results, outputs, jac, models = {}, {}, {}, {}
     for name in names:
         torch.manual_seed(args.seed)
         model = build(name)
@@ -290,31 +300,33 @@ def part_b():
         results[name], outputs[name], jac[name] = m, out[0], J
         print('  %-10s PSNR all %.2f | dropped %.2f | kept %.2f | influence half-width %.1f bands' %
               (name, m['psnr_all'], m['psnr_dropped'], m['psnr_kept'], m['influence_halfwidth_bands']))
-        if name == 'ours':
-            ours_model = model
+        models[name] = model
 
     # width map vs. local spectral roughness on the full image
-    sm = ours_model.fn
+    from scipy.stats import spearmanr
     with torch.no_grad():
-        sm(cube[None])
-        sigma_map = sm.last_width[0, 0]                                         # (H/4, W/4)
         d2 = cube[2:] - 2 * cube[1:-1] + cube[:-2]
         rough = d2.abs().mean(0) / (cube.std(0) + 1e-3)                          # (H, W)
-        pad_h, pad_w = sigma_map.shape[0] * 4 - H, sigma_map.shape[1] * 4 - W
+        pad_h, pad_w = (4 - H % 4) % 4, (4 - W % 4) % 4
         rough = F.pad(rough[None, None], [0, pad_w, 0, pad_h], mode='reflect')
         rough_map = F.avg_pool2d(rough, 4)[0, 0]
-    from scipy.stats import spearmanr
-    rho = spearmanr(rough_map.flatten().numpy(), sigma_map.flatten().numpy()).correlation
-    results['spearman_roughness_sigma'] = float(rho)
-    results['sigma_range'] = [float(sigma_map.min()), float(sigma_map.max())]
-    print('  Spearman(spectral roughness, sigma) = %.3f ; sigma range [%.2f, %.2f] bands' %
-          (rho, sigma_map.min(), sigma_map.max()))
+    sigma_maps = {}
+    for name in ['ours', 'ours_fixdt']:
+        sm = models[name].fn
+        with torch.no_grad():
+            sm(cube[None])
+            sigma_maps[name] = sm.last_width[0, 0]                               # (H/4, W/4)
+        rho = spearmanr(rough_map.flatten().numpy(), sigma_maps[name].flatten().numpy()).correlation
+        results[name]['spearman_roughness_sigma'] = float(rho)
+        results[name]['sigma_range'] = [float(sigma_maps[name].min()), float(sigma_maps[name].max())]
+        print('  [%s] Spearman(spectral roughness, sigma) = %.3f ; sigma range [%.2f, %.2f] bands' %
+              (name, rho, sigma_maps[name].min(), sigma_maps[name].max()))
 
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(1, 4, figsize=(15, 3.6))
+    fig, ax = plt.subplots(1, len(names), figsize=(3.7 * len(names), 3.6))
     for a, name in zip(ax, names):
         a.imshow(jac[name].numpy(), cmap='magma')
         a.set_title('%s\n|dy_i/dx_j|, half-width %.1f bands' % (name, results[name]['influence_halfwidth_bands']))
@@ -332,7 +344,8 @@ def part_b():
         kept = ~drop[0, :, r, c]
         a.plot(x[kept.numpy()], inp[0, :, r, c][kept].numpy(), 'o', color='gray', ms=4, label='input (kept bands)')
         a.plot(x[~kept.numpy()], np.zeros((~kept).sum().item()), 'x', color='red', ms=6, label='dropped bands')
-        for name, st in [('ours', 'b-'), ('learnA', 'g--'), ('specMLP', 'm:'), ('spatialCNN', 'c-.')]:
+        for name, st in [('ours', 'b-'), ('ours_fixdt', 'y-'), ('learnA', 'g--'), ('specMLP', 'm:'),
+                         ('spatialCNN', 'c-.')]:
             a.plot(x, outputs[name][:, r, c].numpy(), st, lw=1.3,
                    label='%s (%.1f dB)' % (name, results[name]['psnr_dropped']))
         a.set_xlabel('band')
@@ -343,16 +356,17 @@ def part_b():
     fig.savefig(os.path.join(args.out_dir, 'fig_real_spectra.png'), dpi=130, bbox_inches='tight')
     plt.close(fig)
 
-    fig, ax = plt.subplots(1, 3, figsize=(13, 4))
+    fig, ax = plt.subplots(1, 4, figsize=(17, 4))
     rgb = cube[[L * 2 // 3, L // 2, L // 4]].permute(1, 2, 0).numpy()
     ax[0].imshow(np.clip(rgb / rgb.max(), 0, 1))
     ax[0].set_title('false-colour image')
-    im1 = ax[1].imshow(sigma_map.numpy(), cmap='viridis')
-    ax[1].set_title('estimated spectral width sigma (bands)')
-    plt.colorbar(im1, ax=ax[1], fraction=0.046)
-    im2 = ax[2].imshow(rough_map.numpy(), cmap='viridis')
-    ax[2].set_title('spectral roughness |d2 x| / std   (Spearman %.2f)' % rho)
-    plt.colorbar(im2, ax=ax[2], fraction=0.046)
+    for a, name in zip(ax[1:3], ['ours', 'ours_fixdt']):
+        im = a.imshow(sigma_maps[name].numpy(), cmap='viridis')
+        a.set_title('sigma (bands), %s\nSpearman with roughness %.2f' % (name, results[name]['spearman_roughness_sigma']))
+        plt.colorbar(im, ax=a, fraction=0.046)
+    im2 = ax[3].imshow(rough_map.numpy(), cmap='viridis')
+    ax[3].set_title('spectral roughness |d2 x| / std')
+    plt.colorbar(im2, ax=ax[3], fraction=0.046)
     for a in ax:
         a.axis('off')
     fig.tight_layout()

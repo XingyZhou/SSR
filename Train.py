@@ -33,6 +33,7 @@ parser.add_argument("--spectral_mamba", action='store_true', help='Add the spect
 parser.add_argument("--sm_width_mode", default='estimate', choices=['estimate', 'param'], help='How the spectral width is learned: per-patch estimator or global parameter')
 parser.add_argument("--sm_patch", default=4, type=int, help='Spatial patch size of one spectral sequence token')
 parser.add_argument("--sm_d_state", default=8, type=int, help='SSM state size N (number of exponential kernels)')
+parser.add_argument("--sm_fixed_dt", action='store_true', help='Fix the SSM step to one band so the decay is set by the spectral width alone')
 opt = parser.parse_args()
 
 

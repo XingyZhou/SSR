@@ -321,6 +321,7 @@ class Net(torch.nn.Module):
             patch=getattr(opt, 'sm_patch', 4),
             d_state=getattr(opt, 'sm_d_state', 8),
             width_mode=getattr(opt, 'sm_width_mode', 'estimate'),
+            selective_dt=not getattr(opt, 'sm_fixed_dt', False),
         )
         para_estimator = []
         for i in range(opt.stage):
