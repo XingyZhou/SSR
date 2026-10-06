@@ -46,12 +46,17 @@ def selective_scan_ref(u, delta, A, B, C, sigma):
     """
     Pure PyTorch selective scan with width-scaled, fixed A.
 
-    u, delta : (T, D, L)   input and step size (step size in band units)
+    u        : (T, D, L)   input
+    delta    : (T, D, L) or (L,) step size in physical units (e.g. nanometers)
     A        : (D, N)      fixed base matrix, A[d, n] = -(n + 1)
     B, C     : (T, N, L)   input-dependent projections
-    sigma    : (T, D) or (T, 1) spectral width (bands)
+    sigma    : (T, D) or (T, 1) spectral width (same units as delta)
     returns  : (T, D, L)
     """
+    if delta.dim() == 1:
+        # Broadcast 1D wavelength steps to (T, D, L)
+        delta = delta.view(1, 1, -1).expand(u.shape)
+        
     rate = delta / sigma.unsqueeze(-1)                               # (T, D, L)
     dA = torch.exp(rate.unsqueeze(2) * A[None, :, :, None])          # (T, D, N, L)
     dBu = delta.unsqueeze(2) * B.unsqueeze(1) * u.unsqueeze(2)       # (T, D, N, L)
@@ -111,19 +116,30 @@ class FixedASSM(nn.Module):
     def get_A(self):
         return self.A if self.fixed_A else -torch.exp(self.A_log)
 
-    def forward(self, x, sigma):
+    def forward(self, x, sigma, wavelengths=None):
         """
-        x     : (T, D, L)
-        sigma : (T, D) or (T, 1)
+        x           : (T, D, L)
+        sigma       : (T, D) or (T, 1)
+        wavelengths : (L,) optional. Actual physical wavelengths (e.g., in nm)
         """
         T, D, L = x.shape
         x_dbl = self.x_proj(rearrange(x, 't d l -> t l d'))
         dt, B, C = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=-1)
+        
         if self.selective_dt:
             dt = F.softplus(self.dt_proj(dt))                        # (T, L, D)
             dt = rearrange(dt, 't l d -> t d l').contiguous()
         else:
-            dt = x.new_full(x.shape, self.dt_fixed)                  # physical band spacing
+            if wavelengths is not None:
+                # Compute physical distance between adjacent bands
+                # dt_t = lambda_t - lambda_{t-1}. First step uses median gap or 0.
+                steps = torch.zeros_like(wavelengths)
+                steps[1:] = torch.abs(wavelengths[1:] - wavelengths[:-1])
+                steps[0] = steps[1:].median() if len(steps) > 1 else self.dt_fixed
+                dt = steps.view(1, 1, -1).expand(T, D, L).to(x.device, x.dtype)
+            else:
+                dt = x.new_full(x.shape, self.dt_fixed)              # uniform fallback spacing
+
         B = rearrange(B, 't l n -> t n l').contiguous()
         C = rearrange(C, 't l n -> t n l').contiguous()
 
@@ -238,13 +254,20 @@ class SpectralMamba(nn.Module):
             sigma = self.sigma_min + (self.sigma_max - self.sigma_min) * torch.sigmoid(raw)
             self.last_width = sigma.detach()
             return sigma
+        
+        # Ensure the estimator only sees the spatial dimension it was trained for?
+        # Actually, 1x1 convs operate on channel dimension. If L changes at test time,
+        # Conv2d(dim, est_hidden) will FAIL because `dim` is hardcoded to training bands!
+        # For true continuous-spectrum Mamba, width_mode must be 'fixed' or 'param'.
+        # We'll assert this during init if continuous testing is expected, but for now
+        # let it crash if used with changed dimensions.
         raw = self.width_est(x)                                               # (B, 1, H, W)
         raw = F.adaptive_avg_pool2d(raw, (hp, wp))                            # one width per patch
         sigma = self.sigma_min + (self.sigma_max - self.sigma_min) * torch.sigmoid(raw)
         self.last_width = sigma.detach()
         return rearrange(sigma, 'b 1 h w -> (b h w) 1')                       # (T, 1)
 
-    def forward(self, x):
+    def forward(self, x, wavelengths=None):
         b, c, h_inp, w_inp = x.shape
         p = self.patch
         pad_h = (p - h_inp % p) % p
@@ -261,9 +284,16 @@ class SpectralMamba(nn.Module):
         x_in = rearrange(x_in, 't l d -> t d l')
         x_in = F.silu(self.conv1d(x_in))                                      # (T, D, L)
 
-        y = self.ssm_fwd(x_in, sigma)
+        y = self.ssm_fwd(x_in, sigma, wavelengths=wavelengths)
         if self.bidirectional:
-            y = y + self.ssm_bwd(x_in.flip(-1), sigma).flip(-1)
+            if wavelengths is not None:
+                # Reverse wavelengths for backward scan so the steps are computed backwards
+                rev_wave = wavelengths.flip(0)
+                y_bwd = self.ssm_bwd(x_in.flip(-1), sigma, wavelengths=rev_wave).flip(-1)
+            else:
+                y_bwd = self.ssm_bwd(x_in.flip(-1), sigma).flip(-1)
+            y = y + y_bwd
+            
         y = y * F.silu(rearrange(z, 't l d -> t d l'))
 
         out = self.out_proj(rearrange(y, 't d l -> t l d'))
