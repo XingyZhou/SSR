@@ -1,7 +1,3 @@
-# [备份注释] 文件名: Cal_para_flops.py
-# [备份注释] 作用: 统计模型参数量与 FLOPs (fvcore)
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 from fvcore.nn import FlopCountAnalysis
 from torch import optim
 from torch.optim.lr_scheduler import MultiStepLR

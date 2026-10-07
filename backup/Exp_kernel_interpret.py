@@ -1,7 +1,3 @@
-# [备份注释] 文件名: Exp_kernel_interpret.py
-# [备份注释] 作用: 实验: 光谱混合器核可解释性 (冲激响应 vs 冻结 sigma)
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 """
 Interpretability of the spectral token mixer.
 

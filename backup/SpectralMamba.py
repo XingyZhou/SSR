@@ -1,7 +1,3 @@
-# [备份注释] 文件名: SpectralMamba.py
-# [备份注释] 作用: 固定 A=-(n+1)/sigma 的自定义光谱 Mamba (SpectralMamba, FixedASSM, selective_scan_ref)
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 """
 Spectral Mamba with a *fixed* state matrix A whose values are determined by a
 learned spectral width.

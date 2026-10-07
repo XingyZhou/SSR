@@ -1,7 +1,3 @@
-# [备份注释] 文件名: Exp_continuous_spectrum.py
-# [备份注释] 作用: 实验: 连续光谱 Mamba, 零样本传感器/波段数适配
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 import argparse
 import json
 import os

@@ -1,7 +1,3 @@
-# [备份注释] 文件名: Dataset.py
-# [备份注释] 作用: CAVE/测试集 .mat 数据读取与 Dataset 封装
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 import torch.utils.data as tud
 import random
 import torch

@@ -1,7 +1,3 @@
-# [备份注释] 文件名: Test.py
-# [备份注释] 作用: 测试脚本: 用训练得到的权重重建并保存结果
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 import torch.utils.data as tud
 from torch import optim
 from torch.optim.lr_scheduler import MultiStepLR

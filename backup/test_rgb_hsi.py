@@ -1,7 +1,3 @@
-# [备份注释] 文件名: test_rgb_hsi.py
-# [备份注释] 作用: 概念验证: 分辨率无关的 RGB->HSI (连续 Mamba)
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

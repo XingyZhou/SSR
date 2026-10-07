@@ -1,6 +1,3 @@
-% [备份注释] 文件名: cal_psnr_ssim.m
-% [备份注释] 作用: Matlab: 计算 PSNR/SSIM
-
 clear all
 close all
 Num_scene = 10;%test scene num

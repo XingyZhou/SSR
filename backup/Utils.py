@@ -1,7 +1,3 @@
-# [备份注释] 文件名: Utils.py
-# [备份注释] 作用: 通用工具: 数据/掩码/指标/日志等
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 import numpy as np
 import scipy.io as sio
 import os

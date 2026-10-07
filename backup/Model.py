@@ -1,7 +1,3 @@
-# [备份注释] 文件名: Model.py
-# [备份注释] 作用: SSR 主网络(含 SpecMamba 光谱 token mixer)
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 import torch
 import torch.nn as nn
 from torch.nn import init

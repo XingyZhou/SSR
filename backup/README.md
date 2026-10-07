@@ -1,5 +1,3 @@
-<!-- [备份注释] 文件名: README.md | 作用: 项目说明 -->
-
 # SSR
 This is a repo for our work: "**[Improving Spectral Snapshot Reconstruction with Spatial-Spectral Rectification](https://openaccess.thecvf.com/content/CVPR2024/html/Zhang_Improving_Spectral_Snapshot_Reconstruction_with_Spectral-Spatial_Rectification_CVPR_2024_paper.html)**".
 

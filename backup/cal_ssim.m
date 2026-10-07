@@ -1,6 +1,3 @@
-% [备份注释] 文件名: cal_ssim.m
-% [备份注释] 作用: Matlab: SSIM 计算函数
-
 function ssim  =  cal_ssim( im1, im2, b_row, b_col )
 
 [h w ch]  =  size( im1 );

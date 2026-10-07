@@ -1,7 +1,3 @@
-# [备份注释] 文件名: Exp_spectral_continuity.py
-# [备份注释] 作用: 实验: 冻结 sigma 的光谱连续性 Mamba 对比
-# [备份注释] 备份来源: 提交 5da19fd 时的原文件, 内容未改动
-
 """
 Frozen-σ spectral Mamba: Δ is the physical band spacing, σ is a hyperparameter
 that is never updated from the training set.

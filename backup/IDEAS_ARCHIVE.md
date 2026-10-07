@@ -1,5 +1,3 @@
-<!-- [备份注释] 文件名: IDEAS_ARCHIVE.md | 作用: 备选研究方向归档 -->
-
 # Alternative Directions for Spectral Mamba in HSI
 
 This document archives two alternative research directions for integrating Mamba into Hyperspectral Image (HSI) Reconstruction. We are currently pursuing **Direction 2 (Continuous-Spectrum Mamba for Zero-Shot Sensor Adaptation)**, but these remain viable fallbacks or future work.
