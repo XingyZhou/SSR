@@ -1,0 +1,54 @@
+{
+  "setting": {
+    "size": 64,
+    "stage": 2,
+    "device": "cpu",
+    "data": "Indian Pines fallback (145,145,28,4) because CAVE .mat files are not on the cloud VM",
+    "note": "Self-hosted worker ai-mlp4 was connected but the training job could not be placed on it; this run is the managed CPU VM."
+  },
+  "run_sm_12ep": {
+    "cmd": "python Train.py --size 64 --stage 2 --spectral_mamba --sm_width_mode fixed --sm_sigma 4 --trainset_num 40 --batch_size 2 --epochs 12 --ckpt_dir ./Checkpoint_s64_st2",
+    "last_epoch": {
+      "psnr": 27.9246,
+      "sam_deg": 4.3702,
+      "seconds": 6.94
+    }
+  },
+  "compare_8ep": {
+    "trainset_num": 40,
+    "epochs": 8,
+    "spectral_mamba": {
+      "psnr": 26.176,
+      "sam_deg": 5.6616,
+      "sec_per_epoch": 7.1
+    },
+    "baseline": {
+      "psnr": 26.3251,
+      "sam_deg": 5.5204,
+      "sec_per_epoch": 3.4
+    },
+    "comment": "On this tiny CPU/IP run, baseline is slightly better. Not a CAVE/GPU result."
+  },
+  "replace_mixer_8ep": {
+    "protocol": "size=64, stage=2, trainset_num=40, epochs=8, seed=42, Indian Pines, CPU",
+    "change": "SpecMamba REPLACES CMB+SAB at dim==28 (SSRU down1/up1 + stage SRB). Spatial WSSA unchanged.",
+    "baseline": {
+      "psnr": 26.3251,
+      "sam_deg": 5.5204,
+      "sec_per_epoch": 4.06,
+      "params_M": 1.207
+    },
+    "mamba_replace": {
+      "psnr": 25.0519,
+      "sam_deg": 6.5268,
+      "sec_per_epoch": 12.94,
+      "params_M": 1.177
+    },
+    "previous_mamba_additive_8ep": {
+      "psnr": 26.176,
+      "sam_deg": 5.6616,
+      "sec_per_epoch": 7.1
+    },
+    "comment": "Replacing the spectral mixer is worse than keeping CMB+SAB (baseline) and worse than adding Mamba as an extra branch. Also slower (6 SSM blocks vs 2)."
+  }
+}
