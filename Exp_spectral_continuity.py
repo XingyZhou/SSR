@@ -40,6 +40,8 @@ parser.add_argument('--noise', default=0.02, type=float)
 parser.add_argument('--lr', default=2e-3, type=float)
 parser.add_argument('--seed', default=0, type=int)
 parser.add_argument('--threads', default=4, type=int)
+parser.add_argument('--parts', default='ab', help="'a', 'b' or 'ab'")
+parser.add_argument('--eval_n', default=32, type=int, help='images in the per-ell evaluation set (Part A)')
 args = parser.parse_args()
 
 torch.set_num_threads(args.threads)
@@ -176,6 +178,59 @@ def gp_cube(b, h, w, ells, gen, block=8):
     return x.clamp(0, 1), ell_map
 
 
+# ------------------------------------------------- training-free references (Part A)
+def baseline_mean(inp, drop):
+    """Predict the known data mean (0.5) for every dropped band."""
+    return torch.where(drop, torch.full_like(inp, 0.5), inp)
+
+
+def baseline_linear(inp, drop):
+    """Linear interpolation along the band axis from the kept (noisy) bands."""
+    out = inp.clone()
+    for bi in range(inp.shape[0]):
+        d = drop[bi, :, 0, 0].numpy()
+        kept = np.flatnonzero(~d)
+        for j in np.flatnonzero(d):
+            if len(kept) == 0:
+                out[bi, j] = 0.5
+            else:
+                out[bi, j] = torch.from_numpy(
+                    np.stack([np.interp(j, kept, inp[bi, kept, y, x].numpy())
+                              for y in range(inp.shape[2]) for x in range(inp.shape[3])])
+                ).reshape(inp.shape[2], inp.shape[3]).float()
+    return out
+
+
+def baseline_gp(inp, drop, ell_pix):
+    """Posterior mean under the true GP (known ell, mean 0.5, std 0.15, noise args.noise):
+    the best any model can do on this task (ignoring the [0, 1] clamp)."""
+    out = inp.clone()
+    idx = np.arange(L)
+    for ell in np.unique(ell_pix.numpy()):
+        K = 0.15 ** 2 * (np.exp(-(idx[:, None] - idx[None]) ** 2 / (2 * ell ** 2)) + 1e-4 * np.eye(L))
+        for bi in range(inp.shape[0]):
+            d = drop[bi, :, 0, 0].numpy()
+            k = ~d
+            if k.all() or d.all():
+                continue
+            gain = K[np.ix_(d, k)] @ np.linalg.inv(K[np.ix_(k, k)] + args.noise ** 2 * np.eye(k.sum()))
+            sel = (ell_pix[bi, 0] == ell)                                   # (H, W) pixels with this ell
+            y = inp[bi][:, sel].numpy()                                     # (L, n)
+            mu = gain @ (y[k] - 0.5) + 0.5
+            tmp = out[bi][:, sel].numpy()
+            tmp[d] = mu
+            out[bi][:, sel] = torch.from_numpy(tmp)
+    return out
+
+
+def per_ell_psnr(pred, gt, drop, ell_pix):
+    res = {}
+    for ell in np.unique(ell_pix.numpy()):
+        res[str(float(ell))] = psnr(pred.clamp(0, 1), gt, drop & (ell_pix == ell).expand_as(drop))
+    res['all'] = psnr(pred.clamp(0, 1), gt, drop)
+    return res
+
+
 def make_sampler(pool, gen):
     return lambda b: pool[torch.randint(0, pool.shape[0], (b,), generator=gen)]
 
@@ -206,20 +261,40 @@ def part_a():
     inp, drop = corrupt(gt, gen_test)
     print('  input PSNR: all %.2f dB, dropped bands %.2f dB' % (psnr(inp, gt), psnr(inp, gt, drop)))
 
-    sweep = {}
+    sweep, models = {}, {}
     sigmas = [1.0, 2.0, 4.0, 8.0]
     for s in sigmas:
         torch.manual_seed(args.seed)
         m = prior(s)
         print('  prior σ=%.0f  trainable-σ params = %d  (should be 0)' % (s, n_trainable_sigma(m)))
-        metrics, _, J, _ = fit_and_score(m, sampler, gt, inp, drop, 'prior_s%.0f' % s)
+        metrics, _, J, models[str(s)] = fit_and_score(m, sampler, gt, inp, drop, 'prior_s%.0f' % s)
         sweep[str(s)] = dict(metrics=metrics, jacobian=J.tolist())
 
     for name, ctor in [('specMLP', lambda: Residual(SpectralMLP(L))),
                        ('spatialCNN', lambda: Residual(SpatialCNN()))]:
         torch.manual_seed(args.seed)
-        metrics, _, J, _ = fit_and_score(ctor(), sampler, gt, inp, drop, name)
+        metrics, _, J, models[name] = fit_and_score(ctor(), sampler, gt, inp, drop, name)
         sweep[name] = dict(metrics=metrics, jacobian=J.tolist())
+
+    # --- per-ell evaluation against training-free references (larger test set)
+    print('\n  --- per-ell evaluation (dropped-band PSNR, dB) vs. training-free references ---')
+    gen_eval = torch.Generator().manual_seed(args.seed + 13)
+    gt_v, ell_map_v = gp_cube(args.eval_n, args.crop, args.crop, ells, gen_eval)
+    inp_v, drop_v = corrupt(gt_v, gen_eval)
+    ell_pix = ell_map_v.repeat_interleave(8, 1).repeat_interleave(8, 2).unsqueeze(1)   # (b, 1, H, W)
+    per_ell = {'input': per_ell_psnr(inp_v, gt_v, drop_v, ell_pix),
+               'mean_0.5': per_ell_psnr(baseline_mean(inp_v, drop_v), gt_v, drop_v, ell_pix),
+               'linear_interp': per_ell_psnr(baseline_linear(inp_v, drop_v), gt_v, drop_v, ell_pix),
+               'gp_optimal': per_ell_psnr(baseline_gp(inp_v, drop_v, ell_pix), gt_v, drop_v, ell_pix)}
+    for name, model in models.items():
+        model.eval()
+        with torch.no_grad():
+            per_ell['prior_s' + name if name[0].isdigit() else name] = per_ell_psnr(
+                model(inp_v), gt_v, drop_v, ell_pix)
+    cols = ['1.0', '2.0', '4.0', '8.0', 'all']
+    print('  %-14s' % 'model' + ''.join('%9s' % ('ell=' + c if c != 'all' else 'all') for c in cols))
+    for name, row in per_ell.items():
+        print('  %-14s' % name + ''.join('%9.2f' % row[c] for c in cols), flush=True)
 
     print('\n  --- match / mismatch: train on a single ell ---')
     match = {}
@@ -277,7 +352,7 @@ def part_a():
     plt.close(fig)
 
     return dict(sweep={k: v['metrics'] for k, v in sweep.items()}, match=match,
-                input_psnr_dropped=psnr(inp, gt, drop))
+                input_psnr_dropped=psnr(inp, gt, drop), per_ell=per_ell)
 
 
 # ----------------------------------------------------------------------------- Part B
@@ -363,7 +438,16 @@ def part_b():
 if __name__ == '__main__':
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    all_res = {'args': vars(args), 'synthetic': part_a(), 'real': part_b()}
-    with open(os.path.join(args.out_dir, 'results.json'), 'w') as f:
+    path = os.path.join(args.out_dir, 'results.json')
+    all_res = {}
+    if os.path.exists(path):          # keep the part that is not re-run
+        with open(path) as f:
+            all_res = json.load(f)
+    all_res['args'] = vars(args)
+    if 'a' in args.parts:
+        all_res['synthetic'] = part_a()
+    if 'b' in args.parts:
+        all_res['real'] = part_b()
+    with open(path, 'w') as f:
         json.dump(all_res, f, indent=2)
     print('\nsaved to', args.out_dir)
