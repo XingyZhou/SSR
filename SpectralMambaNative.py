@@ -11,10 +11,17 @@ decay is not learned; it is a fixed physical prior set by one number, sigma
 
     A[d, n] = -(n + 1) / sigma          (native S4D-real init, A_log = log(n + 1), scaled by 1 / sigma)
 
+The step size dt is fixed too (one band spacing).  An input-dependent dt would
+make the model attend to different bands with different strength, which is the
+text-style importance weighting we deliberately do not want.  With dt fixed the
+decay between bands is exp(-(n + 1) * dt / sigma) at every position, whatever
+the content.
+
 Everything else is the unmodified state-spaces/mamba block: in_proj, causal
-conv1d, input-dependent dt / B / C, D skip, SiLU gate, out_proj, and the fused
-CUDA kernel.  The only structural change is that `A_log` is a frozen buffer
-instead of an nn.Parameter.
+conv1d, input-dependent B / C, D skip, SiLU gate, out_proj, and the fused CUDA
+kernel.  The structural changes: `A_log` is a frozen buffer instead of an
+nn.Parameter, and dt_proj is frozen to a constant (weight 0, bias =
+softplus^-1(dt_fixed)), so softplus(dt_proj(.)) == dt_fixed for every token.
 
 SpectralMamba wraps it for (B, C, H, W) feature maps: each p x p patch is one
 sequence of length C (bands), scanned in both spectral directions.
@@ -40,9 +47,15 @@ except ImportError:  # fall back to the vendored source tree in ./mamba
 class FixedSigmaMamba(Mamba):
     """Native Mamba whose A = -(n + 1) / sigma is fixed (never trained)."""
 
-    def __init__(self, d_model, sigma=4.0, **kwargs):
+    def __init__(self, d_model, sigma=4.0, dt_fixed=1.0, **kwargs):
         super().__init__(d_model, **kwargs)
         self.sigma = float(sigma)
+        self.dt_fixed = float(dt_fixed)
+        with torch.no_grad():  # constant step: no content dependence
+            self.dt_proj.weight.zero_()
+            self.dt_proj.bias.fill_(self.dt_fixed + math.log(-math.expm1(-self.dt_fixed)))  # softplus^-1
+        self.dt_proj.weight.requires_grad_(False)
+        self.dt_proj.bias.requires_grad_(False)
         n = torch.arange(1, self.d_state + 1, dtype=torch.float32, device=self.A_log.device)
         A_log = torch.log(n / self.sigma)[None, :].repeat(self.d_inner, 1)
         del self.A_log                                   # drop the learnable parameter
@@ -54,11 +67,12 @@ class SpectralMamba(nn.Module):
     dim           : number of spectral bands (sequence length)
     patch         : spatial patch size p; d_model = p * p
     sigma         : fixed spectral width in bands
+    dt_fixed      : fixed SSM step in bands (one band spacing)
     bidirectional : separate block for the reversed spectral order
     Other args go to the native Mamba block.  x: (B, C, H, W) -> (B, C, H, W).
     """
 
-    def __init__(self, dim, patch=4, expand=2, d_state=8, d_conv=3, sigma=4.0,
+    def __init__(self, dim, patch=4, expand=2, d_state=8, d_conv=3, sigma=4.0, dt_fixed=1.0,
                  bidirectional=True, **mamba_kwargs):
         super().__init__()
         self.dim = dim
@@ -66,7 +80,7 @@ class SpectralMamba(nn.Module):
         self.sigma = float(sigma)
         self.bidirectional = bidirectional
         kw = dict(d_model=patch * patch, d_state=d_state, d_conv=d_conv, expand=expand,
-                  sigma=sigma, **mamba_kwargs)
+                  sigma=sigma, dt_fixed=dt_fixed, **mamba_kwargs)
         self.mamba_fwd = FixedSigmaMamba(**kw)
         self.mamba_bwd = FixedSigmaMamba(**kw) if bidirectional else None
 
