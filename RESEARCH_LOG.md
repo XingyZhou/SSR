@@ -21,7 +21,7 @@
 | 10-01 | ecb94bc | 修复不学习:`in_proj` 加 bias,改用默认 Linear 初始化 | 无 bias 时全零波段 token 经 SiLU 门控被静音;std=0.02 初始化使输出成为三个近零因子之积,落在鞍点 |
 | 10-01 | 3de68d9 | `selective_dt=False` | 选择性 dt 会自行调衰减,σ 估计器停在初始值;固定 dt 才能让 σ 成为唯一控制量 |
 | 10-01 | 2a5c49a | σ 冻结为超参数,dt 固定为一个波段 | - |
-| 10-01 | 52f3a79 | 冻结 σ 的丢波段实验 | 30% 丢波段下,合成 17 dB、真实 19 dB(输入 6 dB);空间 CNN 做不到;真实数据上光谱 MLP 更强;σ 匹配 GP 长度尺度只在 ℓ=2 时 +0.3 dB,ℓ=8 变差,σ 小一点略好 |
+| 10-01 | 52f3a79 | 冻结 σ 的丢波段实验 | 30% 丢波段下,真实数据 19 dB(输入 5.7 dB;无光谱信息的空间 CNN 13 dB,光谱 MLP 22 dB,所以先验可用但不是最优);合成数据 17 dB,但预测均值的平凡基线约 16.5 dB(空间 CNN 为 16.5 dB),不能说明问题;块的 Jacobian 半宽度在结果文件里为 0.0,可能是残差恒等项主导所致,未验证;σ 匹配 GP 长度尺度只在 ℓ=2 时 +0.3 dB,ℓ=8 变差,σ 小一点略好 |
 | 10-01 | 6d261a9 | 2 阶段小 patch 训练可在 CPU/GPU 跑 | 无 CAVE 时回退 Indian Pines;每 epoch 记录 PSNR/SAM |
 | 10-01 | eb2c01b / d25e810 | 用 SpecMamba 替换 CMB+SAB | 64×64、8 epoch、CPU:baseline 26.33 dB / 5.52°,SpecMamba 25.05 dB / 6.53°,约慢 3 倍(13 s vs 4 s/epoch)。仅 8 epoch,非收敛结果 |
 | 10-04 | 5bba8c7 / f25eb40 | `Exp_kernel_interpret.py` 核可解释性 | 裸 SSM(B=C=1, Δ=1)的 e-folding 与平均滞后随 σ 增大;放进完整 SpecMamba/SRB(学习的 B/C、门控、skip)后,非对角 Jacobian 宽度对所有 σ 都约 8 个波段,与可学习 A 和 CMB 无差别。**σ 的物理含义被 B/C/门控绕开** |
