@@ -8,7 +8,7 @@ from torch.autograd import Variable
 import torch
 import torch.nn as nn
 from Utils import *
-from Model import Net
+from Mamba_Model import HyMCNetL3
 from Dataset import dataset
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -19,7 +19,7 @@ parser = argparse.ArgumentParser(description="PyTorch Spectral Compressive Imagi
 parser.add_argument('--data_path', default='./CAVE_1024_28/', type=str, help='Path of data')
 parser.add_argument('--mask_path', default='./mask_256_28.mat', type=str, help='Path of mask')
 parser.add_argument("--size", default=256, type=int, help='The training image size')
-parser.add_argument("--stage", default=9, type=str, help='Model scale')
+parser.add_argument("--stage", default=3, type=str, help='Model scale')
 parser.add_argument("--trainset_num", default=5000, type=int, help='The number of training samples of each epoch')
 parser.add_argument("--testset_num", default=5, type=int, help='Total number of testset')
 parser.add_argument("--seed", default=42, type=int, help='Random_seed')
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     np.random.seed(opt.seed)
     print(opt)
 
-    model = Net(opt)
+    model = HyMCNetL3(opt)
     model.cuda()
 
     print('time = %s' % (datetime.datetime.now()))
@@ -64,10 +64,10 @@ if __name__ == "__main__":
     # loss_func = nn.L1Loss()
     mse = torch.nn.MSELoss().cuda()
     ## Load trained model
-    start_epoch = findLastCheckpoint(save_dir="./Checkpoint")
+    start_epoch = findLastCheckpoint(save_dir="./Checkpoint_dwt")
     if start_epoch > 0:
         print('Load model: resuming by loading epoch %03d' % start_epoch)
-        checkpoint = torch.load(os.path.join("./Checkpoint", 'model_%03d.pkl' % start_epoch))
+        checkpoint = torch.load(os.path.join("./Checkpoint_dwt", 'model_%03d.pkl' % start_epoch), weights_only=False)
         model.load_state_dict(checkpoint['model'])
         start_epoch = 1 + checkpoint['epoch']
     else:
@@ -109,4 +109,4 @@ if __name__ == "__main__":
             start_epoch + epoch, epoch_loss / len(Dataset), psnr_total / (step + 1), elapsed_time))
         state = {'model': model.state_dict(), 'epoch': start_epoch + epoch,
                  'loss': epoch_loss / len(Dataset), 'psnr': psnr_total / (step + 1)}
-        torch.save(state, os.path.join("./Checkpoint", 'model_%03d.pkl' % (start_epoch + epoch)))
+        torch.save(state, os.path.join("./Checkpoint_dwt", 'model_%03d.pkl' % (start_epoch + epoch)))

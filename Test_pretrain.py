@@ -21,7 +21,7 @@ parser = argparse.ArgumentParser(description="PyTorch Spectral Snapshot Reconstr
 parser.add_argument('--data_path', default='./Test_data/', type=str, help='Path of data')
 parser.add_argument('--mask_path', default='./mask_256_28.mat', type=str, help='Path of mask')
 parser.add_argument("--size", default=256, type=int, help='The training image size')
-parser.add_argument("--scale", default='L', type=str, help='Model scale')
+parser.add_argument("--scale", default='M', type=str, help='Model scale')
 parser.add_argument("--trainset_num", default=5000, type=int, help='The number of training samples of each epoch')
 parser.add_argument("--testset_num", default=10, type=int, help='Total number of testset')
 parser.add_argument("--seed", default=42, type=int, help='Random_seed')
@@ -80,7 +80,7 @@ if __name__ == "__main__":
     loader_train = tud.DataLoader(Dataset, batch_size=opt.batch_size, shuffle=False, num_workers=0)
 
     with torch.no_grad():
-        checkpoint = torch.load("./Checkpoint_pretrain/model_%s.pkl" % opt.scale)
+        checkpoint = torch.load("./Checkpoint_pretrain/model_%s.pkl" % opt.scale, weights_only=False)
         model.load_state_dict(checkpoint['model'])
         model.eval()
         epoch_loss = 0
@@ -100,11 +100,14 @@ if __name__ == "__main__":
                         step // (1 * 1 / opt.batch_size), psnr_total_scene / (1 * 1 / opt.batch_size)))
                 psnr_total_scene = 0
             hsi = out.detach().cpu().permute(2, 3, 1, 0).squeeze(3).numpy()
-            save_path = os.path.join("./Result", '%d.mat' % (step + 1))
+            save_path = os.path.join("./Result", '%d_%s.mat' % (step + 1, opt.scale))
             sio.savemat(save_path, {'hsi': hsi})
             lbl = label.detach().cpu().permute(2, 3, 1, 0).squeeze(3).numpy()
-            save_path = os.path.join("./Label", '%d.mat' % (step + 1))
+            save_path = os.path.join("./Label", '%d_%s.mat' % (step + 1, opt.scale))
             sio.savemat(save_path, {'label': lbl})
 
-        print("test Avg PSNR = %.4f, train Avg PSNR = %.4f" % (psnr_total / (step + 1), checkpoint['psnr']))
+        if 'psnr' in checkpoint:
+            print("test Avg PSNR = %.4f, train Avg PSNR = %.4f" % (psnr_total / (step + 1), checkpoint['psnr']))
+        else:
+            print("test Avg PSNR = %.4f" % (psnr_total / (step + 1)))
 

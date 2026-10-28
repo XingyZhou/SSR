@@ -1,0 +1,12 @@
+cube (C, W, H) = (128, 2335, 2517)
+valid fraction 0.934, scale (p99.99) = 5779.0, max = 13839.0
+21 test tiles (256x256), 35 train tiles (256x256)
+  wrote row block 256 (7 tiles)
+  wrote row block 512 (7 tiles)
+  wrote row block 768 (7 tiles)
+  wrote row block 1024 (7 tiles)
+  wrote row block 1280 (7 tiles)
+  wrote row block 1536 (7 tiles)
+  wrote row block 1792 (7 tiles)
+  wrote row block 2048 (7 tiles)
+done -> ./Chikusei_128

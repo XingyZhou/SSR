@@ -1,0 +1,19 @@
+# swap_bands.py, 2026-10-28, all checkpoints model_300.pkl (V7 / HyMCNetL3 dwt / SSR-S pretrain), PSNR = scene mean
+
+## V7 vs HyMCNetL3
+V7                           PSNR 38.850
+HyMCNetL3                    PSNR 39.118
+level 1 (LL at 128x128): V7_low + HyMCNetL3_high  PSNR 38.898   |   HyMCNetL3_low + V7_high  PSNR 39.066
+level 2 (LL at  64x64 ): V7_low + HyMCNetL3_high  PSNR 38.989   |   HyMCNetL3_low + V7_high  PSNR 38.973
+level 3 (LL at  32x32 ): V7_low + HyMCNetL3_high  PSNR 39.033   |   HyMCNetL3_low + V7_high  PSNR 38.929
+level 4 (LL at  16x16 ): V7_low + HyMCNetL3_high  PSNR 39.081   |   HyMCNetL3_low + V7_high  PSNR 38.884
+
+## V7 vs SSR-S
+V7                           PSNR 38.850
+SSR-S                        PSNR 38.929
+level 1 (LL at 128x128): V7_low + SSR-S_high  PSNR 38.904   |   SSR-S_low + V7_high  PSNR 38.872
+level 2 (LL at  64x64 ): V7_low + SSR-S_high  PSNR 39.003   |   SSR-S_low + V7_high  PSNR 38.775
+level 3 (LL at  32x32 ): V7_low + SSR-S_high  PSNR 39.004   |   SSR-S_low + V7_high  PSNR 38.773
+level 4 (LL at  16x16 ): V7_low + SSR-S_high  PSNR 39.007   |   SSR-S_low + V7_high  PSNR 38.770
+
+Reference (周报_2026-10-15): HyMCNetL3_low(64x64) + SSR-S_high = 39.13 (reproduces HyMCNetL3 itself).

@@ -78,7 +78,7 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         for epoch in range(266, 300):
-            checkpoint = torch.load("./Checkpoint/model_%03d.pkl" % epoch)
+            checkpoint = torch.load("./Checkpoint_4stage/model_%03d.pkl" % epoch, weights_only=False)
             model.load_state_dict(checkpoint['model'])
             model.eval()
             epoch_loss = 0
@@ -110,4 +110,7 @@ if __name__ == "__main__":
                 save_path = os.path.join("./Label", '%d.mat' % (step + 1))
                 sio.savemat(save_path, {'label': lbl})
 
-            print("model %d, test Avg PSNR = %.4f, train Avg PSNR = %.4f" % (epoch, psnr_total / (step + 1), checkpoint['psnr']))
+            if 'psnr' in checkpoint:
+                print("model %d, test Avg PSNR = %.4f, train Avg PSNR = %.4f" % (epoch, psnr_total / (step + 1), checkpoint['psnr']))
+            else:
+                print("model %d, test Avg PSNR = %.4f" % (epoch, psnr_total / (step + 1)))

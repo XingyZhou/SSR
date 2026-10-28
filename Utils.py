@@ -4,6 +4,7 @@ import os
 import glob
 import re
 import torch
+torch.backends.cudnn.enabled = False
 import torch.nn as nn
 import math
 import random
@@ -42,7 +43,7 @@ def loadpath(pathlistfile):
 
 def prepare_data(file_list, file_num):
     #HSI = np.zeros((((512, 512, 28, file_num))))
-    HSI = np.zeros((((1024, 1024, 28, file_num))))
+    HSI = np.zeros((((1024, 1024, 28, file_num))),np.float32)
     for idx in range(file_num):
         path1 = file_list[idx]
         data = sio.loadmat(path1)
