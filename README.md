@@ -91,6 +91,7 @@ tmux new -s train_chik -d 'bash run_chik.sh'
 
 - [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)：所有版本的谱系、检查点、结果、消融链、诊断结论、待办
 - [docs/SETUP.md](docs/SETUP.md)：新服务器环境、数据下载、权重迁移、训练监控
+- [docs/TRAIN_V7S.md](docs/TRAIN_V7S.md)：V7S 三档消融的训练手册（检查、冒烟、启动、测试、对比、结果解读）
 - [docs/100bands.md](docs/100bands.md)：128 波段 Chikusei 线的数据处理、显存、启动方式
 - [docs/weekly/](docs/weekly/)：每周进展报告（2026-10-15、2026-10-19）
 - [SpectralMambaNative/README.md](SpectralMambaNative/README.md)：FixedSigmaMamba 的理论、实现与测试

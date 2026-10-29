@@ -12,7 +12,7 @@ from model_v7s import HyMCNetL3_V7S
 from Dataset import dataset
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")  # GPU=1 run_v7s.sh / CUDA_VISIBLE_DEVICES=1 python ... picks another card
 
 ## Model Config
 parser = argparse.ArgumentParser(description="PyTorch Spectral Compressive Imaging")

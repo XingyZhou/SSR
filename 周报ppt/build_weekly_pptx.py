@@ -1,12 +1,19 @@
-"""Unpack the Rikkyo template, duplicate the inner page into slides 4-7, run the
-weekly generator, and zip the result over the output pptx."""
+"""Unpack the Rikkyo template, duplicate the inner page into extra slides, run a
+weekly generator, and zip the result over the output pptx.
+
+    python 周报ppt/build_weekly_pptx.py [generator.py] [output.pptx] [n_extra_slides]
+
+Defaults reproduce the 2026-10-15 deck (gen_weekly_pptx.py, 4 extra slides -> slides 4-7).
+Extra slides are slide4.. with rId11.. and sldId 259..; the generator decides the final order.
+"""
 import os, re, shutil, subprocess, sys, zipfile
 import xml.etree.ElementTree as ET
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE = os.path.join(REPO, "周报ppt/template_rikkyo_ai.pptx")
-GEN = os.path.join(REPO, "周报ppt/gen_weekly_pptx.py")
-OUT = os.path.join(REPO, "周报ppt/2026年第42週_進捗報告.pptx")
+GEN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "周报ppt/gen_weekly_pptx.py")
+OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(REPO, "周报ppt/2026年第42週_進捗報告.pptx")
+N_EXTRA = int(sys.argv[3]) if len(sys.argv) > 3 else 4
 WORK = os.path.join(os.environ.get("TMPDIR", "/tmp"), "weekly_pptx_unpacked")
 
 if os.path.isdir(WORK):
@@ -30,7 +37,8 @@ pres_path = os.path.join(WORK, "ppt/presentation.xml")
 pres = open(pres_path, encoding="utf-8").read()
 
 new_ids = []
-for n, rid, sid in [(4, 11, 259), (5, 12, 260), (6, 13, 261), (7, 14, 262)]:
+for i in range(N_EXTRA):
+    n, rid, sid = 4 + i, 11 + i, 259 + i
     open(os.path.join(SL, f"slide{n}.xml"), "w", encoding="utf-8").write(src)
     open(os.path.join(SL, f"_rels/slide{n}.xml.rels"), "w", encoding="utf-8").write(rels)
     ct = ct.replace("</Types>", f'<Override PartName="/ppt/slides/slide{n}.xml" ContentType="{SLIDE_CT}"/></Types>')

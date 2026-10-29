@@ -23,7 +23,7 @@ from Dataset import dataset
 from Mamba_Model import haar_dwt2d
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--models', nargs='+', required=True, help='name:module.Class:ckpt')
@@ -80,9 +80,14 @@ if __name__ == "__main__":
 
     rows = []
     for spec in opt.models:
-        name, cls_path, ckpt = spec.split(':')
+        # name:module.Class:ckpt[:key=val,key=val]  (e.g. V7S-s4:model_v7s.HyMCNetL3_V7S:ckpt.pkl:bc_mode=s4,sigma=4)
+        name, cls_path, ckpt, *extra = spec.split(':')
         mod, cls = cls_path.rsplit('.', 1)
-        model = getattr(importlib.import_module(mod), cls)(opt).cuda().eval()
+        m_opt = argparse.Namespace(**vars(opt))
+        for kv in (extra[0].split(',') if extra else []):
+            k, v = kv.split('=')
+            setattr(m_opt, k, float(v) if k in ('sigma', 'dt_fixed') else v)
+        model = getattr(importlib.import_module(mod), cls)(m_opt).cuda().eval()
         model.load_state_dict(torch.load(ckpt, weights_only=False)['model'])
         band_err = {}
         band_sig = {}

@@ -24,7 +24,7 @@ import importlib
 from Dataset import dataset
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
 parser = argparse.ArgumentParser(description="Test HyMCNetL3_V3 on the test set")
 parser.add_argument('--data_path', default='./Test_data/', type=str, help='Path of data')
@@ -45,6 +45,10 @@ parser.add_argument("--isTrain", default=False, type=bool)
 parser.add_argument("--bands", default=28, type=int)
 parser.add_argument("--scene_num", default=10, type=int)
 parser.add_argument("--len_shift", default=2, type=int)
+# ---- HyMCNetL3_V7S only: must match the values the checkpoint was trained with (Train_v7s.py)
+parser.add_argument("--bc_mode", default='selective', choices=['selective', 's4', 'const'])
+parser.add_argument("--sigma", default=4.0, type=float)
+parser.add_argument("--dt_fixed", default=1.0, type=float)
 opt = parser.parse_args()
 
 
